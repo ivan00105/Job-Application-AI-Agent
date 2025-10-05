@@ -5,6 +5,10 @@ import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { JobsPage } from './pages/JobsPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { InterviewPrepPage } from './pages/InterviewPrepPage';
+import { InterviewSessionPage } from './pages/InterviewSessionPage';
+import { InterviewResultsPage } from './pages/InterviewResultsPage';
+import { InterviewAnalyticsPage } from './pages/InterviewAnalyticsPage';
 import './index.css';
 
 function App() {
@@ -34,6 +38,38 @@ function App() {
             element={
               <ProtectedRoute>
                 <ProfilePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/interview"
+            element={
+              <ProtectedRoute>
+                <InterviewPrepPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/interview/session/:sessionId"
+            element={
+              <ProtectedRoute>
+                <InterviewSessionPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/interview/session/:sessionId/results"
+            element={
+              <ProtectedRoute>
+                <InterviewResultsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/interview/analytics"
+            element={
+              <ProtectedRoute>
+                <InterviewAnalyticsPage />
               </ProtectedRoute>
             }
           />

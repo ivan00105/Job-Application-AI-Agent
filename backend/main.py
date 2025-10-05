@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import auth, cv, jobs, matches
+from api import auth, cv, jobs, matches, interview
 from config import get_settings
 
 settings = get_settings()
@@ -50,6 +50,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(cv.router, prefix="/api/cv", tags=["CV Management"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Job Listings"])
 app.include_router(matches.router, prefix="/api/matches", tags=["Job Matching"])
+app.include_router(interview.router, prefix="/api/interview", tags=["Interview Preparation"])
 
 
 @app.get("/")
