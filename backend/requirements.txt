@@ -1,0 +1,28 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.9
+
+# Database
+supabase==2.3.4
+psycopg2-binary==2.9.9
+pgvector==0.2.5
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# AI/ML (will add more as needed)
+openai==1.12.0
+anthropic==0.18.0
+
+# CV Processing (will add later when implementing)
+# PyPDF2==3.0.1
+# python-docx==1.1.0
+# paddleocr==2.7.0
+# Pillow==10.2.0
+
+# Utilities
+pydantic==2.6.1
+pydantic-settings==2.1.0
+python-dotenv==1.0.1
