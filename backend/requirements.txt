@@ -10,7 +10,8 @@ pgvector==0.3.3
 
 # Authentication
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+passlib==1.7.4
+bcrypt==4.2.0
 
 # AI/ML (will add more as needed)
 openai==1.51.0
