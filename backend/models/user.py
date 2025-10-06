@@ -1,7 +1,7 @@
 """
 User-related Pydantic models for request/response validation.
 """
-from pydantic import BaseModel, EmailField
+from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
