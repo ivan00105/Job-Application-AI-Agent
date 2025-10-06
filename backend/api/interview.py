@@ -22,7 +22,7 @@ from models.interview import (
 )
 from models.user import User
 from api.auth import get_current_user
-from database.supabase_client import get_supabase
+from database.supabase_client import get_supabase_client
 from services.interview_service import interview_service
 
 router = APIRouter()
@@ -34,7 +34,7 @@ async def start_interview_session(
     current_user: User = Depends(get_current_user)
 ):
     """Start a new interview practice session."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     session_data = {
         "id": str(uuid.uuid4()),
@@ -62,7 +62,7 @@ async def get_next_question(
     current_user: User = Depends(get_current_user)
 ):
     """Get the next question for the current session."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     session_result = supabase.table("interview_sessions").select("*").eq("id", session_id).eq("user_id", current_user.id).single().execute()
 
@@ -120,7 +120,7 @@ async def submit_answer(
     current_user: User = Depends(get_current_user)
 ):
     """Submit an answer and get AI evaluation."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     session_result = supabase.table("interview_sessions").select("*").eq("id", session_id).eq("user_id", current_user.id).single().execute()
 
@@ -204,7 +204,7 @@ async def get_session_history(
     limit: int = 10
 ):
     """Get user's interview session history."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     result = supabase.table("interview_sessions").select("*").eq("user_id", current_user.id).order("started_at", desc=True).limit(limit).execute()
 
@@ -224,7 +224,7 @@ async def get_session_detail(
     current_user: User = Depends(get_current_user)
 ):
     """Get detailed information about a specific session."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     session_result = supabase.table("interview_sessions").select("*").eq("id", session_id).eq("user_id", current_user.id).single().execute()
 
@@ -253,7 +253,7 @@ async def get_performance_analytics(
     current_user: User = Depends(get_current_user)
 ):
     """Get performance analytics across all domains."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     result = supabase.table("interview_performance_analytics").select("*").eq("user_id", current_user.id).execute()
 
@@ -271,7 +271,7 @@ async def get_questions(
     limit: int = 20
 ):
     """Browse available interview questions."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     query = supabase.table("interview_questions").select("*").eq("is_active", True)
 
@@ -293,7 +293,7 @@ async def abandon_session(
     current_user: User = Depends(get_current_user)
 ):
     """Mark a session as abandoned."""
-    supabase = get_supabase()
+    supabase = get_supabase_client()
 
     result = supabase.table("interview_sessions").update({
         "status": "abandoned"
