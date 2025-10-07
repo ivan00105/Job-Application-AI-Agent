@@ -14,8 +14,9 @@ passlib==1.7.4
 bcrypt==4.2.0
 
 # AI/ML (will add more as needed)
-openai==1.51.0
+openai==1.54.0
 anthropic==0.39.0
+httpx==0.27.0
 
 # CV Processing (will add later when implementing)
 # PyPDF2==3.0.1
