@@ -2,6 +2,16 @@
 
 AI-powered job search and application automation system.
 
+## 📚 Documentation
+
+**Essential Reading:**
+- [LOCAL_SETUP_GUIDE.md](LOCAL_SETUP_GUIDE.md) - Complete setup instructions for first-time users
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Quick reference for making changes (read this before coding!)
+
+**Additional Resources:**
+- [backend/README.md](backend/README.md) - Backend API reference and structure
+- [FEATURE_IDEAS.md](FEATURE_IDEAS.md) - Roadmap and planned features
+
 ## Project Structure
 
 ```
