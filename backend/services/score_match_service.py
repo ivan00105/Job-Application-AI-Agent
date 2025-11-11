@@ -1,5 +1,5 @@
 """ 
-    I didnt set up the requirements.txt
+    I didnt set up the requirements.txt, tmp testing
 """
 
 #%%
@@ -15,6 +15,8 @@ cur_dir = os.getcwd()
 parent_dir = os.path.dirname(cur_dir)
 
 jobs_df = pd.read_csv(parent_dir + '\\DATA\\test_job_data.csv')
+
+tmp_df = pd.read_csv(parent_dir + '\\DATA\\Job_scraping_Data.csv')
 
 
 class SimiliarityFactory:
