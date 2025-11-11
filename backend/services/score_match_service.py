@@ -8,13 +8,73 @@ import os
 import spacy
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import re
 from sklearn.metrics.pairwise import cosine_similarity
 
 cur_dir = os.getcwd()
 parent_dir = os.path.dirname(cur_dir)
-grandparent_dir = os.path.dirname(parent_dir) 
 
-jobs_df = pd.read_csv(grandparent_dir + '\\job_data_clean.csv')
+jobs_df = pd.read_csv(parent_dir + '\\DATA\\test_job_data.csv')
+
+
+class SimiliarityFactory:
+    def __init__(self, raw_cv_df : pd.DataFrame, raw_job_df : pd.DataFrame):
+        self.nlp = spacy.load("en_core_web_sm")
+        self.raw_cv_df = raw_cv_df
+        self.raw_job_df = raw_job_df
+    
+    
+    @classmethod
+    def _normalize_keyword_list(cls, raw_description : str) -> str:
+        """
+            keep deduplicated tokens only
+        """
+        normalized : list[str] = []
+        raw_token = cls.nlp(raw_description)
+        key_points = [chunk.text for chunk in raw_token.noun_chunks]
+        seen = set()
+        for keyword in key_points:
+            if not isinstance(keyword, str):
+                continue
+            kw = keyword.strip()
+            if not kw:
+                continue
+            if kw.lower() in seen:
+                continue
+            seen.add(kw.lower())
+            normalized.append(kw)
+        return normalized
+
+    @staticmethod
+    def _prepare_text_for_vectorization(text : str) -> str:
+        """ 
+            keep lowercase, remove special characters, etc.
+        """
+        lowered = text.lower()
+        lowered = re.sub(r"[`*_>#\-]", " ", lowered)
+        lowered = re.sub(r"\s+", " ", lowered)
+        return lowered
+
+    @classmethod
+    def _build_comparsion(cls, key_points):
+        pass
+
+    @classmethod
+    def _spacy_extract_key_points(cls, text : str) -> str:
+        """
+            For simply testing purpose 
+
+            Extract key points from job descriptions using spaCy
+        """
+        
+        doc = cls.nlp(text)
+        key_points = [chunk.text for chunk in doc.noun_chunks]  # Or use entities: [ent.text for ent in doc.ents]
+        return " ".join(key_points) 
+    
+    def _vectorize_texts(self):
+        pass
+
+
 
 #%%
 """ 
