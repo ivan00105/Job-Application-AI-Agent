@@ -20,8 +20,10 @@ tmp_df = pd.read_csv(parent_dir + '\\DATA\\Job_scraping_Data.csv')
 
 
 class SimiliarityFactory:
+    nlp = spacy.load("en_core_web_sm")
+    embed_model = SentenceTransformer('all-MiniLM-L6-v2') 
+
     def __init__(self, raw_cv_df : pd.DataFrame, raw_job_df : pd.DataFrame):
-        self.nlp = spacy.load("en_core_web_sm")
         self.raw_cv_df = raw_cv_df
         self.raw_job_df = raw_job_df
     
@@ -45,7 +47,7 @@ class SimiliarityFactory:
                 continue
             seen.add(kw.lower())
             normalized.append(kw)
-        return normalized
+        return ", ".join(normalized)
 
     @staticmethod
     def _prepare_text_for_vectorization(text : str) -> str:
@@ -53,13 +55,10 @@ class SimiliarityFactory:
             keep lowercase, remove special characters, etc.
         """
         lowered = text.lower()
-        lowered = re.sub(r"[`*_>#\-]", " ", lowered)
+        lowered = re.sub(r"[`*_>#\-•]", " ", lowered)
         lowered = re.sub(r"\s+", " ", lowered)
         return lowered
 
-    @classmethod
-    def _build_comparsion(cls, key_points):
-        pass
 
     @classmethod
     def _spacy_extract_key_points(cls, text : str) -> str:
@@ -68,41 +67,48 @@ class SimiliarityFactory:
 
             Extract key points from job descriptions using spaCy
         """
-        
+
         doc = cls.nlp(text)
         key_points = [chunk.text for chunk in doc.noun_chunks]  # Or use entities: [ent.text for ent in doc.ents]
         return " ".join(key_points) 
     
-    def _vectorize_texts(self):
-        pass
-
-
+    @classmethod
+    def _transformer_text_vectorization(cls, text : str) -> list:
+        """
+            Use SentenceTransformer to convert text to embeddings
+        """
+        return cls.embed_model.encode(text).tolist()
+    
+    @classmethod
+    def process_and_add_columns(cls, df: pd.DataFrame, text_column: str, key_column: str = 'extracted_keys', embed_column: str = 'embeddings') -> pd.DataFrame:
+        """
+        Process text column to extract keys and embeddings, adding them as new columns.
+        """
+        def safe_apply(func, text, default):
+            if not isinstance(text, str) or not text.strip():
+                return default
+            try:
+                return func(text)
+            except Exception as e:
+                print(f"Error in {func.__name__}: {e}")
+                return default
+        
+        # Extract keys
+        df[key_column] = df[text_column].apply(lambda x: safe_apply(cls._spacy_extract_key_points, x, ""))
+        df[key_column] = df[key_column].apply(lambda x: safe_apply(cls._prepare_text_for_vectorization, x, ""))
+        df[key_column] = df[key_column].apply(lambda x: safe_apply(cls._normalize_keyword_list, x, ""))
+        
+        # Generate embeddings from keys
+        df[embed_column] = df[key_column].apply(lambda x: safe_apply(cls._transformer_text_vectorization, x, []))
+        
+        return df
 
 #%%
-""" 
-    Extract key points from job descriptions using spaCy 
-        - tmp testingm -> just select the first 10 noun tokens
-"""
-def extract_key_points(text):
-    doc = nlp(text)
-    key_points = [chunk.text for chunk in doc.noun_chunks]  # Or use entities: [ent.text for ent in doc.ents]
-    return " ".join(key_points[:10])  # Limit to top 10 for brevity
-
-nlp = spacy.load("en_core_web_sm")
-jobs_df['key_points'] = jobs_df['Job Title'] + " " + jobs_df['Job Responsibilities'] + " " + jobs_df['Job Requirements']
-jobs_df['key_points'] = jobs_df['key_points'].apply(extract_key_points)
+jobs_df = SimiliarityFactory.process_and_add_columns(jobs_df, 'Job Responsibilities', 'extracted_keys', 'embeddings')
 
 #%%
-""" 
-    vectorize key points using SentenceTransformer and compute similarity
-"""
-model = SentenceTransformer('all-MiniLM-L6-v2')  # Lightweight and effective
-jobs_df['embeddings'] = jobs_df['key_points'].apply(lambda x: model.encode(x).tolist())  # Store as list for DataFrame
-
-
-# Example similarity computation
-query = "software engineer python"
-query_embedding = model.encode(query)
+query = "LLM, AI, Machine learning"
+query_embedding = SimiliarityFactory.embed_model.encode(query)
 
 similarities = []
 for emb in jobs_df['embeddings']:
@@ -112,4 +118,5 @@ for emb in jobs_df['embeddings']:
 jobs_df['similarity'] = similarities
 top_matches = jobs_df.sort_values('similarity', ascending=False).head(5)
 print(top_matches[['Job Title', 'similarity']])
-# %%
+
+
