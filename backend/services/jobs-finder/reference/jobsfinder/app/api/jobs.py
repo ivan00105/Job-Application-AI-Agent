@@ -1,87 +1,15 @@
-"""
-Job listings API endpoints.
-Handles job search, filtering, and retrieval.
-"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from typing import Optional, List, Dict, Any
-import os
-import sys
+from app.models.schemas import (
+    JobDataCreate, JobDataSearch, JobDataDelete,
+    SearchResponse, SuccessResponse, CybersecurityJobSearch
+)
+from app.services.qdrant_service import qdrant_service
+from app.services.embedding_service import embedding_service
+from app.services.llm_service import llm_service
+from app.config import settings
 
-from models.job import Job, JobSearchParams, JobDataSearch, JobSearchResult, SearchResponse
-from api.auth import get_current_user
-from database.supabase_client import get_db
-
-# Import from jobs-finder directory (handles hyphen in directory name)
-services_path = os.path.join(os.path.dirname(__file__), '..', 'services', 'jobs-finder')
-sys.path.insert(0, services_path)
-from qdrant_service import qdrant_service
-from embedding_service import embedding_service
-from llm_service import llm_service
-
-router = APIRouter()
-
-
-@router.get("/", response_model=dict)
-async def search_jobs(
-    query: Optional[str] = Query(None, description="Search query"),
-    location: Optional[str] = Query(None, description="Job location"),
-    min_salary: Optional[int] = Query(None, description="Minimum salary"),
-    limit: int = Query(20, ge=1, le=100, description="Number of results"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Search and filter jobs.
-    Returns paginated list of job postings.
-
-    TODO: Implement vector similarity search when embeddings are ready.
-    """
-    db = get_db()
-
-    # Build query
-    query_builder = db.table("jobs").select("*", count="exact").eq("is_active", True)
-
-    # Apply filters
-    if location:
-        query_builder = query_builder.ilike("location", f"%{location}%")
-
-    if min_salary:
-        query_builder = query_builder.gte("salary_min", min_salary)
-
-    if query:
-        # Simple text search for now
-        query_builder = query_builder.or_(
-            f"title.ilike.%{query}%,description.ilike.%{query}%,company.ilike.%{query}%"
-        )
-
-    # Execute with pagination
-    result = query_builder.range(offset, offset + limit - 1).execute()
-
-    return {
-        "jobs": result.data,
-        "total": result.count,
-        "limit": limit,
-        "offset": offset
-    }
-
-
-@router.get("/{job_id}", response_model=dict)
-async def get_job(
-    job_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Get detailed information about a specific job.
-    """
-    db = get_db()
-
-    result = db.table("jobs").select("*").eq("id", job_id).execute()
-
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    return result.data[0]
-
+router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 def filter_job_results(
     results: List[Dict[str, Any]],
@@ -112,8 +40,7 @@ def filter_job_results(
         job_text = (
             payload.get('job_title', '') + ' ' +
             payload.get('job_responsibilities', '') + ' ' +
-            payload.get('job_requirements', '') + ' ' +
-            payload.get('description', '')
+            payload.get('job_requirements', '')
         ).lower()
         
         # Filter by company if specified
@@ -168,31 +95,41 @@ def filter_job_results(
     # Limit results after filtering
     return filtered_results[:limit]
 
+@router.post("/{collection_name}/save", response_model=SuccessResponse)
+async def save_job_data(collection_name: str, job_data: JobDataCreate):
+    """Save or update job data in a collection."""
+    try:
+        # Generate embedding
+        vector = await embedding_service.generate_embedding(job_data.text)
+        
+        # Save to Qdrant
+        qdrant_service.save_job_data(
+            collection_name=collection_name,
+            job_id=job_data.job_id,
+            vector=vector,
+            payload=job_data.payload
+        )
+        
+        return SuccessResponse(
+            success=True,
+            message=f"Job data with ID {job_data.job_id} saved successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving job data: {str(e)}")
 
-@router.post("/search", response_model=SearchResponse)
-async def search_jobs_vector(
-    search: JobDataSearch,
-    current_user: dict = Depends(get_current_user)
-):
+@router.post("/{collection_name}/search", response_model=SearchResponse)
+async def search_jobs(collection_name: str, search: JobDataSearch):
     """
-    Search for jobs using vector similarity search.
+    Search for jobs by keyword and rank by similarity.
     Uses LLM to enhance the search query for better results.
     Supports structured filtering by company, experience, and certifications.
-    
-    This endpoint performs semantic search on job embeddings stored in Qdrant.
     """
     try:
-        # Get collection name (default to "job_data" if not specified)
-        collection_name = search.collection_name or os.getenv("QDRANT_COLLECTION_NAME", "job_data")
-        
         # Enhance query using LLM if enabled
         enhanced_query = search.query
-        use_llm = search.use_llm_enhancement
-        if use_llm is None:
-            # Check global setting
-            enable_llm = os.getenv("ENABLE_LLM_QUERY_ENHANCEMENT", "true").lower() == "true"
-            use_llm = enable_llm
-        
+        use_llm = search.use_llm_enhancement if search.use_llm_enhancement is not None else settings.ENABLE_LLM_QUERY_ENHANCEMENT
         if use_llm:
             enhanced_query = await llm_service.enhance_job_search_query(search.query)
         
@@ -228,21 +165,30 @@ async def search_jobs_vector(
             limit=search.limit
         )
         
-        # Convert to response format
-        search_results = [
-            JobSearchResult(
-                id=result['id'],
-                score=result['score'],
-                payload=result['payload']
-            )
-            for result in filtered_results
-        ]
-        
         return SearchResponse(
-            results=search_results,
-            count=len(search_results)
+            results=filtered_results,
+            count=len(filtered_results)
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error searching jobs: {str(e)}")
+
+@router.delete("/{collection_name}/delete", response_model=SuccessResponse)
+async def delete_job_data(collection_name: str, delete: JobDataDelete):
+    """Delete job data by IDs."""
+    try:
+        qdrant_service.delete_job_data(
+            collection_name=collection_name,
+            job_ids=delete.job_ids
+        )
+        
+        return SuccessResponse(
+            success=True,
+            message=f"Deleted {len(delete.job_ids)} job(s) successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting job data: {str(e)}")
+

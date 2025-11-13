@@ -39,3 +39,30 @@ class JobMatch(BaseModel):
     skill_score: float
     experience_score: float
     explanation: str
+
+
+# Vector search models
+class JobDataSearch(BaseModel):
+    """Job search request for vector search"""
+    query: str
+    limit: int = 10
+    score_threshold: Optional[float] = None
+    filter_conditions: Optional[dict] = None
+    use_llm_enhancement: Optional[bool] = None
+    company_filter: Optional[str] = None
+    min_experience_years: Optional[int] = None
+    certifications: Optional[List[str]] = None
+    collection_name: str = "job_data"  # Default collection name
+
+
+class JobSearchResult(BaseModel):
+    """Single job search result"""
+    id: int
+    score: float
+    payload: dict
+
+
+class SearchResponse(BaseModel):
+    """Job search response"""
+    results: List[JobSearchResult]
+    count: int

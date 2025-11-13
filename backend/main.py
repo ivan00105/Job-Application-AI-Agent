@@ -16,20 +16,29 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
-    print("🚀 Starting Job Application Agent API...")
-    print(f"📝 API Documentation: http://{settings.host}:{settings.port}/docs")
+    print("Starting Job Application Agent API...")
+    print(f"API Documentation: http://{settings.host}:{settings.port}/docs")
     yield
     # Shutdown
-    print("👋 Shutting down...")
+    print("Shutting down...")
 
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Job Application Agent API",
     description="AI-powered job search and application automation system",
-    version="1.0.0",
-    lifespan=lifespan
+    version="1.0.0"
 )
+
+# Add startup event manually
+@app.on_event("startup")
+async def startup_event():
+    print("Starting Job Application Agent API...")
+    print(f"API Documentation: http://{settings.host}:{settings.port}/docs")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("Shutting down...")
 
 # CORS middleware for React frontend
 app.add_middleware(
