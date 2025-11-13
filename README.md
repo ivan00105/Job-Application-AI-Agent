@@ -2,130 +2,83 @@
 
 AI-powered job search and application automation system.
 
-## 📚 Documentation
-
-**Essential Reading:**
-- [LOCAL_SETUP_GUIDE.md](LOCAL_SETUP_GUIDE.md) - Complete setup instructions for first-time users
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Quick reference for making changes (read this before coding!)
-
-**Additional Resources:**
-- [backend/README.md](backend/README.md) - Backend API reference and structure
-- [FEATURE_IDEAS.md](FEATURE_IDEAS.md) - Roadmap and planned features
-
-## Project Structure
-
-```
-├── backend/           # FastAPI backend (Python)
-│   ├── api/          # API endpoints
-│   ├── models/       # Pydantic models
-│   ├── services/     # Business logic (AI will go here)
-│   └── database/     # Database connections
-│
-├── src/              # React frontend (TypeScript)
-│   ├── api/         # API client
-│   ├── components/  # React components
-│   ├── context/     # React context (auth)
-│   └── pages/       # Page components
-```
-
 ## Quick Start
 
-### 1. Database Setup
+**First time setup:**
+1. See [SETUP.md](SETUP.md) for installation instructions
+2. Read [DEVELOPMENT.md](DEVELOPMENT.md) before making changes
 
-The database schema is already created in Supabase. Make sure you have:
-- Supabase project URL
-- Supabase anon key
-
-### 2. Backend Setup
-
+**Already set up?**
 ```bash
-cd backend
+# Start backend
+cd backend && python main.py
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your Supabase credentials
-
-# Create test users
-python scripts/create_test_users.py
-
-# Run server
-python main.py
-```
-
-Backend runs at: http://localhost:8000
-API docs at: http://localhost:8000/docs
-
-### 3. Frontend Setup
-
-```bash
-# Install dependencies
-npm install
-
-# Run development server
+# Start frontend
 npm run dev
 ```
 
-Frontend runs at: http://localhost:5173
+## Architecture
 
-## Test Credentials
-
-After running the test user script:
-- Username: `testuser1` | Password: `password123`
-- Username: `testuser2` | Password: `password123`
-- Username: `demo` | Password: `demo123`
+```
+├── backend/              # FastAPI + PostgreSQL
+│   ├── api/             # REST endpoints
+│   ├── services/        # Business logic
+│   │   ├── shared/      # Shared services (Qdrant client)
+│   │   ├── cv/          # CV parsing
+│   │   ├── jobs/        # Job matching
+│   │   └── interview/   # Interview prep
+│   ├── models/          # Pydantic models
+│   └── database/        # PostgreSQL client
+│
+├── jobsengine/          # Vector search service (Qdrant + Embeddings)
+│
+└── src/                 # React frontend
+    ├── pages/           # Page components
+    ├── components/      # Reusable components
+    └── api/             # API client
+```
 
 ## Features
 
-### Current (Foundation)
+**Current:**
 - ✅ User authentication (JWT)
-- ✅ CV upload interface
-- ✅ Job listing browse
-- ✅ Job matching interface
-- ✅ Responsive UI with Tailwind CSS
+- ✅ CV upload & parsing
+- ✅ Job search with vector similarity
+- ✅ CV-to-job matching
+- ✅ Interview preparation
 
-### Coming Soon (AI Phase)
-- 🔄 CV parsing with OCR
-- 🔄 RAG-powered document generation
-- 🔄 Intelligent job matching algorithm
-- 🔄 Job scraping from multiple sources
-- 🔄 Semi-automated application filling
+**Coming Soon:**
+- Job scraping automation
+- RAG-powered cover letter generation
+- Application auto-fill
+- Advanced interview prep with RAG
 
-## Development
+## Tech Stack
 
-### Backend
-- FastAPI with async support
-- JWT authentication
-- Supabase PostgreSQL + pgvector
-- Auto-generated API docs
+**Backend:**
+- FastAPI (async Python)
+- PostgreSQL (metadata storage)
+- Qdrant (vector search via JobsEngine)
+- Ollama (LLM for parsing & generation)
 
-### Frontend
-- React 18 with TypeScript
-- React Router for navigation
-- Axios for API calls
-- Tailwind CSS for styling
+**Frontend:**
+- React 18 + TypeScript
+- React Router
+- Tailwind CSS
+- Axios
 
-## Architecture
+## Documentation
 
-The system is designed to be AI-ready:
-- Backend services folder prepared for AI components
-- Vector embeddings supported in database
-- API structure ready for ML integration
-- All placeholder endpoints return proper responses
+- [SETUP.md](SETUP.md) - Installation & setup
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Development guide
+- [backend/README.md](backend/README.md) - Backend API reference
+- [FEATURE_IDEAS.md](FEATURE_IDEAS.md) - Feature roadmap
 
-## Next Steps
+## Test Accounts
 
-1. Implement CV parser with OCR (PaddleOCR/EasyOCR)
-2. Build job matching algorithm with vector similarity
-3. Create RAG system for document generation
-4. Add job scrapers for real data
-5. Implement application automation
+- `testuser1` / `password123`
+- `testuser2` / `password123`
+- `demo` / `demo123`
 
 ## License
 

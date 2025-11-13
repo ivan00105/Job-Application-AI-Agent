@@ -8,18 +8,21 @@ from datetime import date, datetime
 
 class Job(BaseModel):
     """Job posting model"""
-    id: str
+    id: Optional[str] = None  # UUID from PostgreSQL
     title: str
-    company: str
+    company: Optional[str] = None
+    company_url: Optional[str] = None
     description: str
-    requirements: List[str]
+    requirements: Optional[str] = None
     location: Optional[str] = None
-    salary_min: Optional[int] = None
-    salary_max: Optional[int] = None
-    url: Optional[str] = None
-    source: Optional[str] = None
-    posted_date: Optional[date] = None
+    salary: Optional[str] = None
+    url: str  # The unique URL from the source
+    source: Optional[str] = None  # 'LinkedIn', 'JobsDB', etc.
+    posted_date: Optional[datetime] = None
+    retrieved_date: Optional[datetime] = None
+    application_type: Optional[str] = None  # 'external_form', 'email', 'easy_apply'
     is_active: bool = True
+    qdrant_synced: bool = False
 
 
 class JobSearchParams(BaseModel):
@@ -36,6 +39,8 @@ class JobMatch(BaseModel):
     """Job match with scoring"""
     job: Job
     overall_score: float
-    skill_score: float
-    experience_score: float
-    explanation: str
+    skill_score: Optional[float] = None
+    experience_score: Optional[float] = None
+    location_score: Optional[float] = None
+    keyword_score: Optional[float] = None
+    explanation: Optional[str] = None

@@ -1,6 +1,4 @@
-"""
-Interview service - AI evaluation and question management.
-"""
+"""Interview service for AI-powered evaluation and question generation"""
 import json
 from typing import Optional, List, Dict, Any
 from openai import OpenAI
@@ -18,7 +16,7 @@ settings = get_settings()
 
 
 class InterviewService:
-    """Service for AI-powered interview evaluation and question generation."""
+    """AI-powered interview evaluation and question generation"""
 
     def __init__(self):
         self.openai_client = OpenAI(api_key=settings.openai_api_key) if hasattr(settings, 'openai_api_key') else None
@@ -30,17 +28,7 @@ class InterviewService:
         user_answer: str,
         knowledge_context: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """
-        Evaluate user's interview answer using AI with RAG context.
-
-        Args:
-            question: The interview question
-            user_answer: User's response
-            knowledge_context: Retrieved knowledge from RAG system
-
-        Returns:
-            Dictionary with scores, feedback, strengths, and improvements
-        """
+        """Evaluate user's interview answer using AI with RAG context"""
         context_str = ""
         if knowledge_context:
             context_str = "\n\nRelevant domain knowledge:\n" + "\n".join(knowledge_context)
@@ -115,7 +103,7 @@ Be constructive, specific, and encouraging in your feedback."""
             return self._mock_evaluation()
 
     def _mock_evaluation(self) -> Dict[str, Any]:
-        """Mock evaluation for testing without API keys."""
+        """Mock evaluation for testing without API keys"""
         return {
             "overall_score": 3.5,
             "relevance_score": 4.0,
@@ -132,7 +120,7 @@ Be constructive, specific, and encouraging in your feedback."""
                 "Consider discussing trade-offs or alternative approaches",
                 "Expand on real-world applications"
             ],
-            "feedback": "Your answer demonstrates a solid foundation, but could benefit from more technical detail and deeper analysis. Consider structuring your response with specific examples and discussing potential challenges or edge cases."
+            "feedback": "Your answer demonstrates a solid foundation, but could benefit from more technical detail and deeper analysis."
         }
 
     async def generate_question(
@@ -142,13 +130,10 @@ Be constructive, specific, and encouraging in your feedback."""
         difficulty: str,
         job_context: Optional[str] = None
     ) -> InterviewQuestion:
-        """
-        Generate a custom interview question based on job context.
-        This is useful for job-specific interview prep.
-        """
+        """Generate a custom interview question based on job context"""
         context_str = f"\n\nJob Context:\n{job_context}" if job_context else ""
 
-        prompt = f"""Generate a {difficulty} level {domain} interview question for a {role_type} role.
+        prompt = f"""Generate a {difficulty} level {question.domain} interview question for a {role_type} role.
 {context_str}
 
 The question should be realistic, relevant, and appropriate for the difficulty level.
@@ -190,7 +175,7 @@ Return in JSON format:
             return self._mock_question(domain, role_type, difficulty)
 
     def _mock_question(self, domain: DomainType, role_type: str, difficulty: str) -> InterviewQuestion:
-        """Mock question for testing."""
+        """Mock question for testing"""
         questions_bank = {
             "IT": {
                 "beginner": "Explain the difference between a stack and a queue data structure.",
@@ -217,3 +202,4 @@ Return in JSON format:
 
 
 interview_service = InterviewService()
+

@@ -53,5 +53,17 @@ class CVUploadResponse(BaseModel):
     """Response after CV upload"""
     profile_id: str
     raw_text: str
-    parsed_data: CVProfile
+    parsed_data: Dict[str, Any]  # Changed from CVProfile to allow flexible LLM output
+    qdrant_synced: bool = False
     message: str = "CV uploaded and parsed successfully"
+
+
+class CVProfileDB(BaseModel):
+    """CV profile as stored in database"""
+    id: str  # UUID
+    user_id: str  # UUID
+    raw_text: Optional[str] = None
+    parsed_data: Dict[str, Any] = {}  # JSONB data
+    qdrant_synced: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
