@@ -1,0 +1,6 @@
+search_term,location,results_wanted,hours_old,schedule_type,cron_hour,cron_minute,cron_day_of_week,interval_hours,interval_minutes
+Finance Manager,Hong Kong,50,720,cron,2,0,,
+Banking Analyst,Hong Kong,50,720,cron,2,0,,
+Financial Analyst,Hong Kong,50,720,cron,2,0,,
+Investment Banking,Hong Kong,50,720,cron,2,0,,
+Risk Analyst,Hong Kong,50,720,cron,2,0,,
