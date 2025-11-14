@@ -119,6 +119,28 @@ The system is designed to be AI-ready:
 - API structure ready for ML integration
 - All placeholder endpoints return proper responses
 
+## CV Parsing Template
+
+The CV parser uses OpenRouter/Ollama to extract structured data from PDF/DOCX files following this JSON schema:
+
+```json
+{
+  "personal_info": {
+    "first_name", "last_name", "email", "phone", "location",
+    "linkedin", "github", "website"
+  },
+  "professional_summary": "string",
+  "work_experience": [{"job_title", "company", "location", "start_date", "end_date", "responsibilities": []}],
+  "education": [{"degree", "field_of_study", "institution", "location", "graduation_year", "gpa"}],
+  "skills": {"technical": [], "soft": [], "tools": []},
+  "certifications": [{"name", "issuer", "date_obtained", "expiry_date"}],
+  "languages": [{"language", "proficiency"}],
+  "projects": [{"name", "description", "technologies": [], "url"}]
+}
+```
+
+See `backend/services/cv/parser_service.py` for the full template used by the LLM.
+
 ## Next Steps
 
 1. Implement CV parser with OCR (PaddleOCR/EasyOCR)

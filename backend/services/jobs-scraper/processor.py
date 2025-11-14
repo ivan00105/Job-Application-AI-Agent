@@ -187,20 +187,10 @@ class JobProcessor:
             "source": str(source) if source else None,
         }
         
-        # Extract salary if available
+        # Extract salary if available (stored as TEXT in database)
         salary = safe_get("salary")
         if salary:
-            # Try to parse salary range
-            salary_str = str(salary)
-            # Simple parsing (can be enhanced)
-            if "-" in salary_str:
-                parts = salary_str.split("-")
-                if len(parts) == 2:
-                    try:
-                        job_data["salary_min"] = int(re.sub(r'[^\d]', '', parts[0]))
-                        job_data["salary_max"] = int(re.sub(r'[^\d]', '', parts[1]))
-                    except ValueError:
-                        pass
+            job_data["salary"] = str(salary)
         
         # Extract posted date
         date_posted = safe_get("date_posted") or safe_get("posted_date")

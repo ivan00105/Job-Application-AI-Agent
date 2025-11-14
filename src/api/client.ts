@@ -75,6 +75,11 @@ export const cvAPI = {
     return response.data;
   },
 
+  saveProfile: async (parsedData: any) => {
+    const response = await api.post('/cv/profile/save', { parsed_data: parsedData });
+    return response.data;
+  },
+
   deleteProfile: async () => {
     await api.delete('/cv/profile');
   },
@@ -86,6 +91,7 @@ export const jobsAPI = {
     query?: string;
     location?: string;
     min_salary?: number;
+    hide_applied?: boolean;
     limit?: number;
     offset?: number;
   }) => {
@@ -109,6 +115,31 @@ export const matchesAPI = {
   calculate: async () => {
     const response = await api.post('/matches/calculate');
     return response.data;
+  },
+};
+
+// Applications API
+export const applicationsAPI = {
+  markApplied: async (jobId: string, notes?: string) => {
+    const response = await api.post('/applications/mark-applied', {
+      job_id: jobId,
+      notes
+    });
+    return response.data;
+  },
+
+  getApplications: async () => {
+    const response = await api.get('/applications/');
+    return response.data;
+  },
+
+  checkStatus: async (jobId: string) => {
+    const response = await api.get(`/applications/status/${jobId}`);
+    return response.data;
+  },
+
+  remove: async (jobId: string) => {
+    await api.delete(`/applications/${jobId}`);
   },
 };
 

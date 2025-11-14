@@ -245,8 +245,7 @@ class JobScraperService:
                         description=job_data["description"],
                         requirements=job_data["requirements"],
                         location=job_data.get("location"),
-                        salary_min=job_data.get("salary_min"),
-                        salary_max=job_data.get("salary_max"),
+                        salary=job_data.get("salary"),
                         url=job_data.get("url"),
                         source=job_data.get("source"),
                         posted_date=job_data.get("posted_date"),
@@ -267,8 +266,7 @@ class JobScraperService:
                             "requirements": job_data["requirements"],
                             "url": job_data.get("url", ""),
                             "source": job_data.get("source", ""),
-                            "salary_min": job_data.get("salary_min"),
-                            "salary_max": job_data.get("salary_max"),
+                            "salary": job_data.get("salary", ""),
                         }
                         
                         # Save to Qdrant

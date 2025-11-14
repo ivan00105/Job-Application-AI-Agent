@@ -26,36 +26,55 @@ async def search_jobs(
     query: Optional[str] = Query(None, description="Search query"),
     location: Optional[str] = Query(None, description="Job location"),
     min_salary: Optional[int] = Query(None, description="Minimum salary"),
+    hide_applied: bool = Query(False, description="Hide jobs user has applied to"),
     limit: int = Query(20, ge=1, le=100, description="Number of results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     current_user: dict = Depends(get_current_user),
     db: PostgresClient = Depends(get_db)
 ):
     """
-    Search and filter jobs using PostgreSQL + Qdrant vector search.
+    Search and filter jobs with application status tracking.
     """
-    conditions = ["is_active = TRUE"]
-    params = []
-    param_count = 1
+    conditions = ["j.is_active = TRUE"]
+    params = [current_user["id"]]
+    param_count = 2
+
+    if hide_applied:
+        conditions.append("a.id IS NULL")
 
     if location:
-        conditions.append(f"location ILIKE ${param_count}")
+        conditions.append(f"j.location ILIKE ${param_count}")
         params.append(f"%{location}%")
         param_count += 1
 
-    if min_salary:
-        conditions.append(f"salary_min >= ${param_count}")
-        params.append(min_salary)
-        param_count += 1
+    # Note: salary filtering not supported - database has TEXT field, not numeric min/max
+    # if min_salary:
+    #     conditions.append(f"j.salary_min >= ${param_count}")
+    #     params.append(min_salary)
+    #     param_count += 1
 
     if query:
-        conditions.append(f"(title ILIKE ${param_count} OR description ILIKE ${param_count} OR company ILIKE ${param_count})")
+        conditions.append(f"(j.title ILIKE ${param_count} OR j.description ILIKE ${param_count} OR j.company ILIKE ${param_count})")
         params.append(f"%{query}%")
         param_count += 1
 
     where_clause = " AND ".join(conditions)
-    count_query = f"SELECT COUNT(*) FROM jobs WHERE {where_clause}"
-    search_query = f"SELECT * FROM jobs WHERE {where_clause} ORDER BY posted_date DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+    
+    count_query = f"""
+        SELECT COUNT(*) FROM jobs j
+        LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
+        WHERE {where_clause}
+    """
+    
+    search_query = f"""
+        SELECT j.*, 
+               CASE WHEN a.id IS NOT NULL THEN true ELSE false END as applied
+        FROM jobs j
+        LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
+        WHERE {where_clause}
+        ORDER BY j.posted_date DESC
+        LIMIT ${param_count} OFFSET ${param_count + 1}
+    """
     params.extend([limit, offset])
 
     total = await db.fetch_val(count_query, *params[:-2])

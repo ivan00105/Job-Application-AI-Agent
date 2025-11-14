@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS jobs_is_active_idx ON jobs(is_active);
 
 -- Agent memory for form field answers (vectors in Qdrant)
 CREATE TABLE IF NOT EXISTS agent_memory (
-    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     context_key TEXT NOT NULL DEFAULT 'global',
     question_text TEXT NOT NULL,

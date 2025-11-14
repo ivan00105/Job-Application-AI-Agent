@@ -90,8 +90,7 @@ class DatabaseService:
         description: str,
         requirements: List[str],
         location: Optional[str] = None,
-        salary_min: Optional[int] = None,
-        salary_max: Optional[int] = None,
+        salary: Optional[str] = None,
         url: Optional[str] = None,
         source: Optional[str] = None,
         posted_date: Optional[date] = None,
@@ -117,7 +116,7 @@ class DatabaseService:
                 
                 # Build dynamic INSERT query based on available columns
                 base_columns = ['title', 'company', 'description', 'requirements', 'location', 
-                               'url', 'source', 'posted_date', 'is_active', 'scraped_at']
+                               'url', 'source', 'posted_date', 'is_active', 'retrieved_date']
                 optional_columns = []
                 values = []
                 
@@ -131,7 +130,7 @@ class DatabaseService:
                             values.append(posted_date)
                         elif col == 'is_active':
                             values.append(is_active)
-                        elif col == 'scraped_at':
+                        elif col == 'retrieved_date':
                             values.append(datetime.utcnow())
                         elif col == 'title':
                             values.append(title)
@@ -146,13 +145,10 @@ class DatabaseService:
                         elif col == 'source':
                             values.append(source)
                 
-                # Add salary columns if they exist
-                if 'salary_min' in existing_columns and salary_min is not None:
-                    optional_columns.append('salary_min')
-                    values.append(salary_min)
-                if 'salary_max' in existing_columns and salary_max is not None:
-                    optional_columns.append('salary_max')
-                    values.append(salary_max)
+                # Add salary column if it exists
+                if 'salary' in existing_columns and salary is not None:
+                    optional_columns.append('salary')
+                    values.append(salary)
                 
                 # Add embedding if column exists and embedding is provided
                 embedding_value = None
