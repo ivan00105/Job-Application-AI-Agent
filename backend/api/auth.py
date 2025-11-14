@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from models.user import User, UserCreate, Token, TokenData
-from database.supabase_client import get_db
+from database.postgres_client import get_db, PostgresClient
 from config import get_settings
 
 router = APIRouter()
@@ -58,22 +58,24 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-        return {"id": user_id}
+        return {"user_id": user_id, "id": user_id}  # Include both for compatibility
     except JWTError:
         raise credentials_exception
 
 
 @router.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
-async def register(user: UserCreate):
+async def register(user: UserCreate, db: PostgresClient = Depends(get_db)):
     """
     Register a new user.
     Creates user account in database.
     """
-    db = get_db()
-
     # Check if username already exists
-    existing = db.table("users").select("id").eq("username", user.username).execute()
-    if existing.data:
+    existing = await db.fetch_one(
+        "SELECT id FROM users WHERE username = $1",
+        user.username
+    )
+    
+    if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
@@ -81,32 +83,32 @@ async def register(user: UserCreate):
 
     # Hash password and create user
     hashed_password = get_password_hash(user.password)
-    result = db.table("users").insert({
-        "username": user.username,
-        "password_hash": hashed_password
-    }).execute()
+    user_id = await db.fetch_val(
+        "INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id",
+        user.username,
+        hashed_password
+    )
 
-    return {"message": "User created successfully", "username": user.username}
+    return {"message": "User created successfully", "username": user.username, "user_id": str(user_id)}
 
 
 @router.post("/token", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: PostgresClient = Depends(get_db)):
     """
     Login endpoint (OAuth2 compatible).
     Returns JWT access token.
     """
-    db = get_db()
-
     # Fetch user from database
-    result = db.table("users").select("*").eq("username", form_data.username).execute()
+    user = await db.fetch_one(
+        "SELECT id, username, password_hash FROM users WHERE username = $1",
+        form_data.username
+    )
 
-    if not result.data:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
         )
-
-    user = result.data[0]
 
     # Verify password
     if not verify_password(form_data.password, user["password_hash"]):
@@ -116,22 +118,23 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         )
 
     # Create access token
-    access_token = create_access_token(data={"sub": user["id"]})
+    access_token = create_access_token(data={"sub": str(user["id"])})
 
     return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.get("/me", response_model=dict)
-async def get_me(current_user: dict = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user), db: PostgresClient = Depends(get_db)):
     """
     Get current user information.
     Protected endpoint that requires authentication.
     """
-    db = get_db()
+    user = await db.fetch_one(
+        "SELECT id, username, created_at FROM users WHERE id = $1",
+        current_user["user_id"]
+    )
 
-    result = db.table("users").select("id, username, created_at").eq("id", current_user["id"]).execute()
-
-    if not result.data:
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return result.data[0]
+    return dict(user)

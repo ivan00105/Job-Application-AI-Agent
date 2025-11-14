@@ -6,8 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import auth, cv, jobs, matches, interview
+from api import auth, cv, jobs, matches
 from config import get_settings
+from database.postgres_client import get_postgres_client
 
 settings = get_settings()
 
@@ -15,30 +16,31 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
-    # Startup
-    print("Starting Job Application Agent API...")
-    print(f"API Documentation: http://{settings.host}:{settings.port}/docs")
+    print(f"Starting Job Application Agent API on {settings.host}:{settings.port}")
+    print(f"Connecting to PostgreSQL at {settings.postgres_host}:{settings.postgres_port}")
+    
+    db_client = get_postgres_client()
+    await db_client.connect()
+    print("PostgreSQL connected")
+    
+    print(f"JobsEngine URL: {settings.jobsengine_url}")
+    print(f"Ollama URL: {settings.ollama_url}")
+    print(f"API docs: http://{settings.host}:{settings.port}/docs")
+    
     yield
-    # Shutdown
+    
     print("Shutting down...")
+    await db_client.disconnect()
+    print("PostgreSQL disconnected")
 
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Job Application Agent API",
     description="AI-powered job search and application automation system",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
-
-# Add startup event manually
-@app.on_event("startup")
-async def startup_event():
-    print("Starting Job Application Agent API...")
-    print(f"API Documentation: http://{settings.host}:{settings.port}/docs")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("Shutting down...")
 
 # CORS middleware for React frontend
 app.add_middleware(
@@ -59,7 +61,6 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(cv.router, prefix="/api/cv", tags=["CV Management"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Job Listings"])
 app.include_router(matches.router, prefix="/api/matches", tags=["Job Matching"])
-app.include_router(interview.router, prefix="/api/interview", tags=["Interview Preparation"])
 
 
 @app.get("/")

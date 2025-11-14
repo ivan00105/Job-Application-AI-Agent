@@ -9,7 +9,7 @@ import sys
 
 from models.job import Job, JobSearchParams, JobDataSearch, JobSearchResult, SearchResponse
 from api.auth import get_current_user
-from database.supabase_client import get_db
+from database.postgres_client import get_db, PostgresClient
 
 # Import from jobs-finder directory (handles hyphen in directory name)
 services_path = os.path.join(os.path.dirname(__file__), '..', 'services', 'jobs-finder')
@@ -28,38 +28,42 @@ async def search_jobs(
     min_salary: Optional[int] = Query(None, description="Minimum salary"),
     limit: int = Query(20, ge=1, le=100, description="Number of results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db: PostgresClient = Depends(get_db)
 ):
     """
-    Search and filter jobs.
-    Returns paginated list of job postings.
-
-    TODO: Implement vector similarity search when embeddings are ready.
+    Search and filter jobs using PostgreSQL + Qdrant vector search.
     """
-    db = get_db()
+    conditions = ["is_active = TRUE"]
+    params = []
+    param_count = 1
 
-    # Build query
-    query_builder = db.table("jobs").select("*", count="exact").eq("is_active", True)
-
-    # Apply filters
     if location:
-        query_builder = query_builder.ilike("location", f"%{location}%")
+        conditions.append(f"location ILIKE ${param_count}")
+        params.append(f"%{location}%")
+        param_count += 1
 
     if min_salary:
-        query_builder = query_builder.gte("salary_min", min_salary)
+        conditions.append(f"salary_min >= ${param_count}")
+        params.append(min_salary)
+        param_count += 1
 
     if query:
-        # Simple text search for now
-        query_builder = query_builder.or_(
-            f"title.ilike.%{query}%,description.ilike.%{query}%,company.ilike.%{query}%"
-        )
+        conditions.append(f"(title ILIKE ${param_count} OR description ILIKE ${param_count} OR company ILIKE ${param_count})")
+        params.append(f"%{query}%")
+        param_count += 1
 
-    # Execute with pagination
-    result = query_builder.range(offset, offset + limit - 1).execute()
+    where_clause = " AND ".join(conditions)
+    count_query = f"SELECT COUNT(*) FROM jobs WHERE {where_clause}"
+    search_query = f"SELECT * FROM jobs WHERE {where_clause} ORDER BY posted_date DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+    params.extend([limit, offset])
+
+    total = await db.fetch_val(count_query, *params[:-2])
+    jobs = await db.fetch_all(search_query, *params)
 
     return {
-        "jobs": result.data,
-        "total": result.count,
+        "jobs": [dict(job) for job in jobs],
+        "total": total,
         "limit": limit,
         "offset": offset
     }
@@ -68,19 +72,19 @@ async def search_jobs(
 @router.get("/{job_id}", response_model=dict)
 async def get_job(
     job_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    db: PostgresClient = Depends(get_db)
 ):
     """
     Get detailed information about a specific job.
     """
-    db = get_db()
+    query = "SELECT * FROM jobs WHERE id = $1"
+    job = await db.fetch_one(query, job_id)
 
-    result = db.table("jobs").select("*").eq("id", job_id).execute()
-
-    if not result.data:
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return result.data[0]
+    return dict(job)
 
 
 def filter_job_results(

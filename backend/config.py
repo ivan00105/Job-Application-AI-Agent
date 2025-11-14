@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # PostgreSQL (for direct PostgreSQL connection)
     postgres_host: Optional[str] = None
     postgres_port: int = 5432
+    postgres_db: Optional[str] = None  # Added for compatibility
     postgres_database: Optional[str] = None
     postgres_user: Optional[str] = None
     postgres_password: Optional[str] = None
@@ -42,7 +43,12 @@ class Settings(BaseSettings):
     qdrant_path: Optional[str] = None
     qdrant_collection_name: str = "job_data"
 
-    # Embedding Service Configuration
+    # JobsEngine Service (for compatibility with services)
+    jobsengine_url: Optional[str] = None
+    
+    # Ollama Configuration
+    ollama_url: str = "http://localhost:11434"  # For CV parser compatibility
+    ollama_chat_model: str = "llama3"  # For LLM generation
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "bge-m3"
     embedding_dim: int = 1024
@@ -50,8 +56,17 @@ class Settings(BaseSettings):
     # LLM Configuration (OpenRouter)
     openrouter_api_key: Optional[str] = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "openrouter/gpt-oss-120b"
+    openrouter_model: str = "openai/gpt-oss-120b"
     enable_llm_query_enhancement: bool = True
+
+    # Scraping Configuration
+    scrape_sites: str = '["indeed", "linkedin", "google"]'
+    scrape_results_wanted: int = 1000
+    scrape_hours_old: int = 720
+
+    # Processing Configuration
+    batch_size: int = 10
+    enable_duplicate_detection: bool = True
 
     class Config:
         env_file = ".env"
