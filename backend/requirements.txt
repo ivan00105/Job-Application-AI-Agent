@@ -24,10 +24,22 @@ python-docx==1.1.0  # For Word documents (future)
 # paddleocr==2.7.0  # OCR (future)
 Pillow==10.2.0  # Image processing
 
+#Scraping
+python-jobspy>=0.5.0
+qdrant-client>=1.7.1
+
+# NLP
+spacy>=3.7.0
+
+# Scheduling
+apscheduler>=3.10.0
+
 # Utilities
 pydantic==2.6.1
 pydantic-settings==2.1.0
 python-dotenv==1.0.1
+requests==2.31.0
+
 
 pandas
 numpy

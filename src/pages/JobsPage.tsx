@@ -5,46 +5,93 @@ import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { JobCard } from '../components/JobCard';
 import { jobsAPI } from '../api/client';
-import { Search } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export const JobsPage = () => {
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [hideApplied, setHideApplied] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(50);
+  const [totalJobs, setTotalJobs] = useState(0);
 
   useEffect(() => {
-    loadJobs();
-  }, [hideApplied]);
+    const loadJobs = async () => {
+      setLoading(true);
+      try {
+        const offset = (currentPage - 1) * pageSize;
+        const data = await jobsAPI.search({
+          limit: pageSize,
+          offset: offset,
+          hide_applied: hideApplied
+        });
+        setJobs(data.jobs || []);
+        setTotalJobs(data.total || 0);
+      } catch (err) {
+        console.error('Failed to load jobs:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const loadJobs = async () => {
-    setLoading(true);
-    try {
-      const data = await jobsAPI.search({ limit: 50, hide_applied: hideApplied });
-      setJobs(data.jobs || []);
-    } catch (err) {
-      console.error('Failed to load jobs:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    loadJobs();
+  }, [currentPage, pageSize, hideApplied]);
+
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [hideApplied]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCurrentPage(1);
     setLoading(true);
     try {
+      const offset = 0;
       const data = await jobsAPI.search({
         query: searchQuery,
-        limit: 50,
+        limit: pageSize,
+        offset: offset,
         hide_applied: hideApplied
       });
       setJobs(data.jobs || []);
+      setTotalJobs(data.total || 0);
     } catch (err) {
       console.error('Search failed:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  const handlePageChange = (newPage: number) => {
+    setCurrentPage(newPage);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleApplicationUpdate = () => {
+    // Reload current page after application status change
+    const loadJobs = async () => {
+      setLoading(true);
+      try {
+        const offset = (currentPage - 1) * pageSize;
+        const data = await jobsAPI.search({
+          limit: pageSize,
+          offset: offset,
+          hide_applied: hideApplied
+        });
+        setJobs(data.jobs || []);
+        setTotalJobs(data.total || 0);
+      } catch (err) {
+        console.error('Failed to load jobs:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadJobs();
+  };
+
+  const totalPages = Math.ceil(totalJobs / pageSize);
 
   return (
     <Layout>
@@ -97,11 +144,42 @@ export const JobsPage = () => {
             </p>
           </div>
         ) : (
-          <div className="grid gap-4">
-            {jobs.map((job: any) => (
-              <JobCard key={job.id} job={job} onApplicationUpdate={loadJobs} />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-4">
+              {jobs.map((job: any) => (
+                <JobCard key={job.id} job={job} onApplicationUpdate={handleApplicationUpdate} />
+              ))}
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-gray-200 pt-6">
+                <div className="text-sm text-gray-700">
+                  Showing {((currentPage - 1) * pageSize) + 1} to {Math.min(currentPage * pageSize, totalJobs)} of {totalJobs} jobs
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handlePageChange(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 transition"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </button>
+                  <div className="px-4 py-2 text-sm text-gray-700">
+                    Page {currentPage} of {totalPages}
+                  </div>
+                  <button
+                    onClick={() => handlePageChange(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 transition"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </Layout>
