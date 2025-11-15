@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 import os
 import sys
 import json
+import logging
 
 from models.job import Job, JobSearchParams, JobDataSearch, JobSearchResult, SearchResponse
 from api.auth import get_current_user
@@ -18,6 +19,8 @@ sys.path.insert(0, services_path)
 from qdrant_service import qdrant_service
 from embedding_service import embedding_service
 from llm_service import llm_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -210,7 +213,7 @@ async def get_recommended_jobs(
                             # Request more results to account for filtering and pagination
                             search_limit = min((limit + offset) * 2, 200)
                             
-                            vector_results = await qdrant_service.search_jobs(
+                            vector_results = qdrant_service.search_jobs(
                                 collection_name=collection_name,
                                 query_vector=query_vector,
                                 limit=search_limit,
@@ -281,11 +284,17 @@ async def get_recommended_jobs(
                                         total = len(job_ids)
                                         source = "cv_vector_search"
                         except Exception as vector_err:
-                            print(f"Vector search with CV profile failed: {vector_err}")
+                            logger.warning(
+                                f"Vector search with CV profile failed: {vector_err}. "
+                                f"Falling back to saved jobs or latest jobs."
+                            )
                             # Fall through to saved jobs or latest
                             pass
                 except Exception as cv_err:
-                    print(f"Error processing CV profile for vector search: {cv_err}")
+                    logger.warning(
+                        f"Error processing CV profile for vector search: {cv_err}. "
+                        f"Falling back to saved jobs or latest jobs."
+                    )
                     # Fall through to saved jobs or latest
                     pass
         
@@ -330,7 +339,7 @@ async def get_recommended_jobs(
                             # Request more results to filter out already saved ones and account for pagination
                             search_limit = min((limit + offset) * 2, 200)
                             
-                            vector_results = await qdrant_service.search_jobs(
+                            vector_results = qdrant_service.search_jobs(
                                 collection_name=collection_name,
                                 query_vector=query_vector,
                                 limit=search_limit,
@@ -399,11 +408,17 @@ async def get_recommended_jobs(
                                     total = len(job_ids)
                                     source = "similar_to_saved"
                         except Exception as vector_err:
-                            print(f"Vector search for similar jobs failed: {vector_err}")
+                            logger.warning(
+                                f"Vector search for similar jobs failed: {vector_err}. "
+                                f"Falling back to latest jobs."
+                            )
                             # Fall through to latest jobs
                             pass
                 except Exception as e:
-                    print(f"Error finding similar jobs: {e}")
+                    logger.warning(
+                        f"Error finding similar jobs: {e}. "
+                        f"Falling back to latest jobs."
+                    )
                     # Fall through to latest jobs
                     pass
         
@@ -443,7 +458,7 @@ async def get_recommended_jobs(
             source = "latest"
     
     except Exception as e:
-        print(f"Error getting recommended jobs: {e}")
+        logger.error(f"Error getting recommended jobs: {e}. Falling back to latest jobs.")
         # Fallback to latest jobs on any error
         conditions = ["j.is_active = TRUE"]
         params = [current_user["id"]]
@@ -555,7 +570,7 @@ async def get_similar_jobs(
             # Search for similar jobs (exclude the current job)
             search_limit = min(limit * 2, 100)  # Get more to filter out the current job
             
-            vector_results = await qdrant_service.search_jobs(
+            vector_results = qdrant_service.search_jobs(
                 collection_name=collection_name,
                 query_vector=query_vector,
                 limit=search_limit,
@@ -649,7 +664,10 @@ async def get_similar_jobs(
                     "offset": 0
                 }
         except Exception as vector_err:
-            print(f"Vector search for similar jobs failed: {vector_err}")
+            logger.warning(
+                f"Vector search for similar jobs failed: {vector_err}. "
+                f"Falling back to keyword search."
+            )
             # Fallback to keyword search
             conditions = ["j.is_active = TRUE", "j.id != $2"]
             params = [current_user["id"], job_id]
@@ -696,7 +714,7 @@ async def get_similar_jobs(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error finding similar jobs: {e}")
+        logger.error(f"Error finding similar jobs: {e}")
         raise HTTPException(status_code=500, detail=f"Error finding similar jobs: {str(e)}")
 
 
@@ -903,7 +921,9 @@ async def search_jobs_vector_with_db(
                     enhanced_query = await llm_service.enhance_job_search_query(search.query)
                 except Exception as llm_err:
                     # LLM enhancement failed, use original query
-                    print(f"LLM enhancement failed, using original query: {llm_err}")
+                    logger.warning(
+                        f"LLM enhancement failed, using original query: {llm_err}"
+                    )
                     enhanced_query = search.query
             
             # Generate embedding for enhanced query
@@ -947,15 +967,15 @@ async def search_jobs_vector_with_db(
                 # Log search results for debugging
                 if qdrant_results:
                     scores = [r.get('score', 0) for r in qdrant_results]
-                    print(f"Vector search found {len(qdrant_results)} results")
-                    print(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}, avg={sum(scores)/len(scores):.4f}")
+                    logger.debug(f"Vector search found {len(qdrant_results)} results")
+                    logger.debug(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}, avg={sum(scores)/len(scores):.4f}")
                     if score_threshold is not None:
-                        print(f"Using score threshold: {score_threshold}")
+                        logger.debug(f"Using score threshold: {score_threshold}")
                 else:
-                    print(f"Vector search returned 0 results (threshold: {score_threshold})")
+                    logger.debug(f"Vector search returned 0 results (threshold: {score_threshold})")
                     # If no results and threshold is set, try without threshold
                     if score_threshold is not None and score_threshold > 0.3:
-                        print(f"Retrying with lower threshold (0.3) for complex query...")
+                        logger.debug(f"Retrying with lower threshold (0.3) for complex query...")
                         qdrant_results = qdrant_service.search_jobs(
                             collection_name=collection_name,
                             query_vector=query_vector,
@@ -965,8 +985,8 @@ async def search_jobs_vector_with_db(
                         )
                         if qdrant_results:
                             scores = [r.get('score', 0) for r in qdrant_results]
-                            print(f"Retry found {len(qdrant_results)} results with lower threshold")
-                            print(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}")
+                            logger.debug(f"Retry found {len(qdrant_results)} results with lower threshold")
+                            logger.debug(f"Score range: min={min(scores):.4f}, max={max(scores):.4f}")
                             
             except Exception as qdrant_err:
                 # Qdrant search failed, fallback to keyword search
@@ -982,7 +1002,7 @@ async def search_jobs_vector_with_db(
             )
             
             if not filtered_results:
-                print(f"Warning: All {len(qdrant_results)} Qdrant results were filtered out by post-processing")
+                logger.warning(f"All {len(qdrant_results)} Qdrant results were filtered out by post-processing")
             
             # Extract job IDs from Qdrant results
             # The payload contains job_id which is the PostgreSQL UUID
@@ -1058,7 +1078,9 @@ async def search_jobs_vector_with_db(
             
         except ValueError as vector_err:
             # Vector search services unavailable, fallback to keyword search
-            print(f"Vector search unavailable ({vector_err}), falling back to keyword search")
+            logger.warning(
+                f"Vector search unavailable ({vector_err}), falling back to keyword search"
+            )
             # Fall through to keyword search below
             raise vector_err
     
@@ -1130,7 +1152,9 @@ async def search_jobs_vector_with_db(
             raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # For any other error, try keyword search as fallback
-        print(f"Vector search error: {str(e)}, falling back to keyword search")
+        logger.warning(
+            f"Vector search error: {str(e)}, falling back to keyword search"
+        )
         try:
             conditions = ["j.is_active = TRUE"]
             params = [current_user["id"]]

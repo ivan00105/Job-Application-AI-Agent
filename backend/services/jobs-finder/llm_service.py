@@ -6,8 +6,20 @@ import httpx
 from typing import Optional
 import os
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+# Import LLM logger
+try:
+    from backend.services.shared.llm_logger import log_llm_call
+except ImportError:
+    try:
+        from services.shared.llm_logger import log_llm_call
+    except ImportError:
+        # Fallback if logger not available
+        def log_llm_call(*args, **kwargs):
+            pass
 
 # Try to import config, fallback to os.getenv
 try:
@@ -94,6 +106,17 @@ Please enhance this query for better job search results. Expand it with relevant
         if context:
             user_prompt += f"\n\nContext: {context}"
         
+        request_data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens
+        }
+        
+        start_time = time.time()
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -103,20 +126,31 @@ Please enhance this query for better job search results. Expand it with relevant
                         "HTTP-Referer": self.http_referer or "https://github.com/your-repo",
                         "X-Title": "Job Search API"
                     },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": self.temperature,
-                        "max_tokens": self.max_tokens
-                    }
+                    json=request_data
                 )
                 response.raise_for_status()
                 data = response.json()
                 
+                duration_ms = (time.time() - start_time) * 1000
                 enhanced_query = data["choices"][0]["message"]["content"].strip()
+                
+                # Extract token usage if available
+                usage = data.get("usage", {})
+                tokens_used = usage.get("total_tokens")
+                
+                # Log the LLM call
+                log_llm_call(
+                    provider="openrouter",
+                    model=self.model,
+                    prompt=user_prompt,
+                    system_prompt=system_prompt,
+                    response=enhanced_query,
+                    request_data=request_data,
+                    response_data=data,
+                    duration_ms=duration_ms,
+                    tokens_used=tokens_used,
+                    metadata={"function": "enhance_job_search_query", "original_query": user_query, "context": context}
+                )
                 
                 # Fallback to original query if enhancement is empty or too short
                 if not enhanced_query or len(enhanced_query) < len(user_query) * 0.5:
@@ -125,11 +159,39 @@ Please enhance this query for better job search results. Expand it with relevant
                 return enhanced_query
                 
         except httpx.HTTPError as e:
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
             # If LLM call fails, return original query
-            logger.warning(f"LLM query enhancement failed: {str(e)}")
+            logger.warning(f"LLM query enhancement failed: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.model,
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=request_data,
+                duration_ms=duration_ms,
+                metadata={"function": "enhance_job_search_query", "original_query": user_query, "context": context}
+            )
             return user_query
         except Exception as e:
-            logger.warning(f"Unexpected error in LLM service: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger.warning(f"Unexpected error in LLM service: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.model,
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=request_data,
+                duration_ms=duration_ms,
+                metadata={"function": "enhance_job_search_query", "original_query": user_query, "context": context}
+            )
             return user_query
     
     async def generate_text(
@@ -154,13 +216,21 @@ Please enhance this query for better job search results. Expand it with relevant
         if not self.api_key:
             raise ValueError("OpenRouter API key not configured")
         
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        request_data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature or self.temperature,
+            "max_tokens": max_tokens or (self.max_tokens * 10)  # Default to 10x for longer responses
+        }
+        
+        start_time = time.time()
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-                
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers={
@@ -168,23 +238,67 @@ Please enhance this query for better job search results. Expand it with relevant
                         "HTTP-Referer": self.http_referer or "https://github.com/your-repo",
                         "X-Title": "Job Application AI Agent"
                     },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": temperature or self.temperature,
-                        "max_tokens": max_tokens or (self.max_tokens * 10)  # Default to 10x for longer responses
-                    }
+                    json=request_data
                 )
                 response.raise_for_status()
                 data = response.json()
                 
-                return data["choices"][0]["message"]["content"].strip()
+                duration_ms = (time.time() - start_time) * 1000
+                generated_text = data["choices"][0]["message"]["content"].strip()
+                
+                # Extract token usage if available
+                usage = data.get("usage", {})
+                tokens_used = usage.get("total_tokens")
+                
+                # Log the LLM call
+                log_llm_call(
+                    provider="openrouter",
+                    model=self.model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    response=generated_text,
+                    request_data=request_data,
+                    response_data=data,
+                    duration_ms=duration_ms,
+                    tokens_used=tokens_used,
+                    metadata={"function": "generate_text", "max_tokens": max_tokens, "temperature": temperature}
+                )
+                
+                return generated_text
                 
         except httpx.HTTPError as e:
-            logger.error(f"LLM text generation failed: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger.error(f"LLM text generation failed: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=request_data,
+                duration_ms=duration_ms,
+                metadata={"function": "generate_text", "max_tokens": max_tokens, "temperature": temperature}
+            )
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in LLM text generation: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger.error(f"Unexpected error in LLM text generation: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=request_data,
+                duration_ms=duration_ms,
+                metadata={"function": "generate_text", "max_tokens": max_tokens, "temperature": temperature}
+            )
             raise
 
 

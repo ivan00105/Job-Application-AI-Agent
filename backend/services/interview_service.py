@@ -4,6 +4,7 @@ Interview service - AI evaluation and question management.
 import json
 import httpx
 import logging
+import time
 from typing import Optional, List, Dict, Any
 
 from config import get_settings
@@ -16,6 +17,17 @@ from models.interview import (
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Import LLM logger
+try:
+    from backend.services.shared.llm_logger import log_llm_call
+except ImportError:
+    try:
+        from services.shared.llm_logger import log_llm_call
+    except ImportError:
+        # Fallback if logger not available
+        def log_llm_call(*args, **kwargs):
+            pass
 
 
 class InterviewService:
@@ -40,24 +52,25 @@ class InterviewService:
         if not self.openrouter_api_key:
             raise ValueError("OpenRouter API key not configured")
         
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        json_data = {
+            "model": self.openrouter_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
+        # Add response_format if specified (for JSON mode)
+        if response_format:
+            json_data["response_format"] = {"type": response_format}
+        
+        start_time = time.time()
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-                
-                json_data = {
-                    "model": self.openrouter_model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
-                }
-                
-                # Add response_format if specified (for JSON mode)
-                if response_format:
-                    json_data["response_format"] = {"type": response_format}
-                
                 response = await client.post(
                     f"{self.openrouter_base_url}/chat/completions",
                     headers={
@@ -70,13 +83,62 @@ class InterviewService:
                 response.raise_for_status()
                 data = response.json()
                 
-                return data["choices"][0]["message"]["content"].strip()
+                duration_ms = (time.time() - start_time) * 1000
+                generated_text = data["choices"][0]["message"]["content"].strip()
+                
+                # Extract token usage if available
+                usage = data.get("usage", {})
+                tokens_used = usage.get("total_tokens")
+                
+                # Log the LLM call
+                log_llm_call(
+                    provider="openrouter",
+                    model=self.openrouter_model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    response=generated_text,
+                    request_data=json_data,
+                    response_data=data,
+                    duration_ms=duration_ms,
+                    tokens_used=tokens_used,
+                    metadata={"function": "_call_openrouter", "response_format": response_format}
+                )
+                
+                return generated_text
                 
         except httpx.HTTPError as e:
-            logger.error(f"OpenRouter API call failed: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger.error(f"OpenRouter API call failed: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.openrouter_model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=json_data,
+                duration_ms=duration_ms,
+                metadata={"function": "_call_openrouter", "response_format": response_format}
+            )
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in OpenRouter API call: {str(e)}")
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger.error(f"Unexpected error in OpenRouter API call: {error_msg}")
+            
+            # Log the error
+            log_llm_call(
+                provider="openrouter",
+                model=self.openrouter_model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                error=error_msg,
+                request_data=json_data,
+                duration_ms=duration_ms,
+                metadata={"function": "_call_openrouter", "response_format": response_format}
+            )
             raise
 
     async def evaluate_answer(
