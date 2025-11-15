@@ -4,7 +4,7 @@
  */
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, FileText, Briefcase, Target, User, Brain, CheckSquare } from 'lucide-react';
+import { LogOut, FileText, Briefcase, Target, User, Bookmark, MessageSquare } from 'lucide-react';
 
 export const Layout = ({ children }: { children: React.ReactNode }) => {
   const { user, logout } = useAuth();
@@ -48,15 +48,15 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                   to="/applications"
                   className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium flex items-center"
                 >
-                  <CheckSquare className="h-4 w-4 mr-1" />
-                  Applications
+                  <Bookmark className="h-4 w-4 mr-1" />
+                  Saved Jobs
                 </Link>
                 <Link
-                  to="/interview"
+                  to="/interviews"
                   className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium flex items-center"
                 >
-                  <Brain className="h-4 w-4 mr-1" />
-                  Interview Prep
+                  <MessageSquare className="h-4 w-4 mr-1" />
+                  Interviews
                 </Link>
                 <Link
                   to="/profile"

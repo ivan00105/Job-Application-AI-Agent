@@ -131,6 +131,61 @@ Please enhance this query for better job search results. Expand it with relevant
         except Exception as e:
             logger.warning(f"Unexpected error in LLM service: {str(e)}")
             return user_query
+    
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> str:
+        """
+        Generate text using LLM with a custom prompt.
+        
+        Args:
+            prompt: The user prompt
+            system_prompt: Optional system prompt
+            max_tokens: Optional max tokens (overrides default)
+            temperature: Optional temperature (overrides default)
+            
+        Returns:
+            Generated text response
+        """
+        if not self.api_key:
+            raise ValueError("OpenRouter API key not configured")
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+                
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "HTTP-Referer": self.http_referer or "https://github.com/your-repo",
+                        "X-Title": "Job Application AI Agent"
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": temperature or self.temperature,
+                        "max_tokens": max_tokens or (self.max_tokens * 10)  # Default to 10x for longer responses
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                return data["choices"][0]["message"]["content"].strip()
+                
+        except httpx.HTTPError as e:
+            logger.error(f"LLM text generation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in LLM text generation: {str(e)}")
+            raise
 
 
 # Singleton instance

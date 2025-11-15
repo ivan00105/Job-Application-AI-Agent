@@ -2,9 +2,9 @@
 Interview service - AI evaluation and question management.
 """
 import json
+import httpx
+import logging
 from typing import Optional, List, Dict, Any
-from openai import OpenAI
-from anthropic import Anthropic
 
 from config import get_settings
 from models.interview import (
@@ -14,6 +14,7 @@ from models.interview import (
     QuestionCategory
 )
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -21,8 +22,62 @@ class InterviewService:
     """Service for AI-powered interview evaluation and question generation."""
 
     def __init__(self):
-        self.openai_client = OpenAI(api_key=settings.openai_api_key) if hasattr(settings, 'openai_api_key') else None
-        self.anthropic_client = Anthropic(api_key=settings.anthropic_api_key) if hasattr(settings, 'anthropic_api_key') else None
+        self.openrouter_api_key = settings.openrouter_api_key
+        self.openrouter_base_url = settings.openrouter_base_url or "https://openrouter.ai/api/v1"
+        # Use gpt-oss-120b model (can be openrouter/gpt-oss-120b or openai/gpt-oss-120b)
+        self.openrouter_model = settings.openrouter_model or "openrouter/gpt-oss-120b"
+        self.http_referer = getattr(settings, 'openrouter_http_referer', None)
+        
+    async def _call_openrouter(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        response_format: Optional[str] = None
+    ) -> str:
+        """Call OpenRouter API for text generation."""
+        if not self.openrouter_api_key:
+            raise ValueError("OpenRouter API key not configured")
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+                
+                json_data = {
+                    "model": self.openrouter_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens
+                }
+                
+                # Add response_format if specified (for JSON mode)
+                if response_format:
+                    json_data["response_format"] = {"type": response_format}
+                
+                response = await client.post(
+                    f"{self.openrouter_base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openrouter_api_key}",
+                        "HTTP-Referer": self.http_referer or "https://github.com/your-repo",
+                        "X-Title": "Job Application AI Agent"
+                    },
+                    json=json_data
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                return data["choices"][0]["message"]["content"].strip()
+                
+        except httpx.HTTPError as e:
+            logger.error(f"OpenRouter API call failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in OpenRouter API call: {str(e)}")
+            raise
 
     async def evaluate_answer(
         self,
@@ -85,33 +140,23 @@ Return your evaluation in the following JSON format:
 Be constructive, specific, and encouraging in your feedback."""
 
         try:
-            if self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are an expert interviewer providing constructive evaluation."},
-                        {"role": "user", "content": evaluation_prompt}
-                    ],
+            if self.openrouter_api_key:
+                system_prompt = "You are an expert interviewer providing constructive evaluation."
+                response_text = await self._call_openrouter(
+                    prompt=evaluation_prompt,
+                    system_prompt=system_prompt,
                     temperature=0.7,
-                    response_format={"type": "json_object"}
+                    max_tokens=2000,
+                    response_format="json_object"
                 )
-                result = json.loads(response.choices[0].message.content)
-                return result
-            elif self.anthropic_client:
-                response = self.anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1024,
-                    messages=[
-                        {"role": "user", "content": evaluation_prompt}
-                    ]
-                )
-                result = json.loads(response.content[0].text)
+                result = json.loads(response_text)
                 return result
             else:
+                logger.warning("OpenRouter API key not configured, using mock evaluation")
                 return self._mock_evaluation()
 
         except Exception as e:
-            print(f"Error in AI evaluation: {e}")
+            logger.error(f"Error in AI evaluation: {e}")
             return self._mock_evaluation()
 
     def _mock_evaluation(self) -> Dict[str, Any]:
@@ -162,17 +207,16 @@ Return in JSON format:
 }}"""
 
         try:
-            if self.openai_client:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are an expert interviewer creating realistic interview questions."},
-                        {"role": "user", "content": prompt}
-                    ],
+            if self.openrouter_api_key:
+                system_prompt = "You are an expert interviewer creating realistic interview questions."
+                response_text = await self._call_openrouter(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
                     temperature=0.8,
-                    response_format={"type": "json_object"}
+                    max_tokens=2000,
+                    response_format="json_object"
                 )
-                result = json.loads(response.choices[0].message.content)
+                result = json.loads(response_text)
 
                 return InterviewQuestion(
                     question_text=result["question_text"],
@@ -183,10 +227,11 @@ Return in JSON format:
                     ideal_answer=result.get("ideal_answer")
                 )
             else:
+                logger.warning("OpenRouter API key not configured, using mock question")
                 return self._mock_question(domain, role_type, difficulty)
 
         except Exception as e:
-            print(f"Error generating question: {e}")
+            logger.error(f"Error generating question: {e}")
             return self._mock_question(domain, role_type, difficulty)
 
     def _mock_question(self, domain: DomainType, role_type: str, difficulty: str) -> InterviewQuestion:
