@@ -1,12 +1,33 @@
 import { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { applicationsAPI } from '../api/client';
-import { Briefcase, Calendar, MapPin, ExternalLink, Trash2 } from 'lucide-react';
+import { 
+    Briefcase, Bookmark, FileText, MessageSquare, Gift, 
+    CheckCircle, XCircle, Ban 
+} from 'lucide-react';
+import { JobCard } from '../components/JobCard';
+
+type ApplicationStatus = 
+    | 'saved'
+    | 'applied'
+    | 'interviewing'
+    | 'offer'
+    | 'accepted'
+    | 'rejected'
+    | 'declined'
+    | 'withdrawn'
+    | 'not_interested'
+    | null;
 
 interface Application {
     id: string;
     job_id: string;
+    status: string;
+    notes?: string;
     applied_at: string;
+    created_at: string;
+    updated_at: string;
     job: {
         id: string;
         title: string;
@@ -15,23 +36,76 @@ interface Application {
         description?: string;
         job_url?: string;
         posted_date?: string;
+        salary?: string;
     };
 }
 
+const STATUS_TABS: Array<{ value: ApplicationStatus | 'all'; label: string; icon: any; count?: number }> = [
+    { value: 'all', label: 'All', icon: Briefcase },
+    { value: 'saved', label: 'Saved', icon: Bookmark },
+    { value: 'applied', label: 'Applied', icon: FileText },
+    { value: 'interviewing', label: 'Interviewing', icon: MessageSquare },
+    { value: 'offer', label: 'Offer', icon: Gift },
+    { value: 'accepted', label: 'Accepted', icon: CheckCircle },
+    { value: 'rejected', label: 'Rejected', icon: XCircle },
+    { value: 'declined', label: 'Declined', icon: Ban },
+];
+
+
 export const ApplicationsPage = () => {
+    const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
     const [applications, setApplications] = useState<Application[]>([]);
     const [loading, setLoading] = useState(true);
+    
+    // Initialize activeTab from URL parameter or default to 'all'
+    const tabParam = searchParams.get('tab') as ApplicationStatus | 'all' | null;
+    const [activeTab, setActiveTab] = useState<ApplicationStatus | 'all'>(
+        tabParam && ['all', 'saved', 'applied', 'interviewing', 'offer', 'accepted', 'rejected', 'declined', 'withdrawn', 'not_interested'].includes(tabParam) 
+            ? tabParam 
+            : 'all'
+    );
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [preparationStatuses, setPreparationStatuses] = useState<Record<string, any>>({});
 
     useEffect(() => {
         loadApplications();
     }, []);
 
+    // Update URL when tab changes
+    useEffect(() => {
+        if (activeTab !== 'all') {
+            setSearchParams({ tab: activeTab as string });
+        } else {
+            setSearchParams({});
+        }
+    }, [activeTab, setSearchParams]);
+
     const loadApplications = async () => {
         try {
             setLoading(true);
             const data = await applicationsAPI.getApplications();
-            setApplications(data.applications || []);
+            const apps = data.applications || [];
+            setApplications(apps);
+            
+            // Load preparation statuses for all jobs
+            const statusPromises = apps.map(async (app: Application) => {
+                try {
+                    const status = await applicationsAPI.getPreparationStatus(app.job_id);
+                    return { jobId: app.job_id, status };
+                } catch (err) {
+                    return { jobId: app.job_id, status: null };
+                }
+            });
+            
+            const statuses = await Promise.all(statusPromises);
+            const statusMap: Record<string, any> = {};
+            statuses.forEach(({ jobId, status }) => {
+                if (status) {
+                    statusMap[jobId] = status;
+                }
+            });
+            setPreparationStatuses(statusMap);
         } catch (err: any) {
             setMessage({
                 type: 'error',
@@ -42,119 +116,196 @@ export const ApplicationsPage = () => {
         }
     };
 
-    const handleRemove = async (jobId: string, applicationId: string) => {
-        if (!confirm('Remove this application record?')) return;
+    const handleApplicationUpdate = () => {
+        loadApplications();
+    };
 
+    const handlePrepareInterview = async (jobId: string) => {
         try {
-            await applicationsAPI.remove(jobId);
-            setApplications(applications.filter((app) => app.id !== applicationId));
-            setMessage({ type: 'success', text: 'Application removed' });
-            setTimeout(() => setMessage(null), 3000);
+            const result = await applicationsAPI.prepareInterview(jobId);
+            if (result.redirect_url) {
+                navigate(result.redirect_url);
+            }
         } catch (err: any) {
             setMessage({
                 type: 'error',
-                text: err.response?.data?.detail || 'Failed to remove application',
+                text: err.response?.data?.detail || 'Failed to start interview prep. Please try again.'
             });
         }
     };
 
-    const formatDate = (dateString: string) => {
-        return new Date(dateString).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-        });
+    const handlePrepareCV = async (jobId: string) => {
+        try {
+            setMessage({ type: 'success', text: 'Generating tailored CV...' });
+            const result = await applicationsAPI.prepareCV(jobId);
+            if (result.redirect_url) {
+                navigate(result.redirect_url);
+            }
+        } catch (err: any) {
+            setMessage({
+                type: 'error',
+                text: err.response?.data?.detail || 'Failed to generate tailored CV. Please make sure you have uploaded your CV in the Profile page.'
+            });
+        }
+    };
+
+    const handlePrepareCoverLetter = async (jobId: string) => {
+        try {
+            setMessage({ type: 'success', text: 'Generating cover letter...' });
+            const result = await applicationsAPI.prepareCoverLetter(jobId);
+            if (result.redirect_url) {
+                navigate(result.redirect_url);
+            }
+        } catch (err: any) {
+            setMessage({
+                type: 'error',
+                text: err.response?.data?.detail || 'Failed to generate cover letter. Please make sure you have uploaded your CV in the Profile page.'
+            });
+        }
+    };
+
+    // Filter applications by active tab
+    const filteredApplications = activeTab === 'all' 
+        ? applications 
+        : applications.filter(app => app.status === activeTab);
+
+    // Count applications by status
+    const getStatusCount = (status: ApplicationStatus | 'all') => {
+        if (status === 'all') return applications.length;
+        return applications.filter(app => app.status === status).length;
+    };
+
+    // Convert application to job format for JobCard
+    const applicationToJob = (app: Application) => {
+        return {
+            id: app.job.id,
+            title: app.job.title,
+            company: app.job.company,
+            location: app.job.location || null,
+            salary: app.job.salary || null,
+            description: app.job.description || '',
+            url: app.job.job_url || '',
+            posted_date: app.job.posted_date || null,
+            applied: true,
+            application_status: app.status as ApplicationStatus,
+            application_id: app.id,
+        };
     };
 
     return (
         <Layout>
-            <div className="max-w-6xl mx-auto p-6">
-                <div className="mb-6">
-                    <h1 className="text-3xl font-bold mb-2">My Applications</h1>
-                    <p className="text-gray-600">Track all jobs you've applied to</p>
+            <div className="space-y-6">
+                {/* Header */}
+                <div>
+                    <h1 className="text-3xl font-bold text-gray-900">Saved Jobs</h1>
+                    <p className="text-gray-600 mt-1">Manage and track all your job applications</p>
                 </div>
 
+                {/* Status Tabs */}
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
+                    <div className="flex gap-1 overflow-x-auto">
+                        {STATUS_TABS.map((tab) => {
+                            const TabIcon = tab.icon;
+                            const count = getStatusCount(tab.value);
+                            const isActive = activeTab === tab.value;
+                            
+                            return (
+                                <button
+                                    key={tab.value}
+                                    onClick={() => setActiveTab(tab.value)}
+                                    className={`
+                                        flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium
+                                        transition-all duration-200 whitespace-nowrap
+                                        ${isActive
+                                            ? 'bg-blue-600 text-white shadow-sm'
+                                            : 'text-gray-700 hover:bg-gray-100'
+                                        }
+                                    `}
+                                >
+                                    <TabIcon size={16} />
+                                    <span>{tab.label}</span>
+                                    {count > 0 && (
+                                        <span className={`
+                                            px-2 py-0.5 rounded-full text-xs font-semibold
+                                            ${isActive
+                                                ? 'bg-blue-500 text-white'
+                                                : 'bg-gray-200 text-gray-700'
+                                            }
+                                        `}>
+                                            {count}
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* Message Alert */}
                 {message && (
                     <div
-                        className={`mb-6 p-4 rounded ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
-                            }`}
+                        className={`p-4 rounded-lg border ${
+                            message.type === 'success' 
+                                ? 'bg-green-50 border-green-200 text-green-800' 
+                                : 'bg-red-50 border-red-200 text-red-800'
+                        }`}
                     >
                         {message.text}
                     </div>
                 )}
 
+                {/* Content */}
                 {loading ? (
-                    <div className="text-center py-12">
+                    <div className="text-center py-12 bg-white rounded-lg shadow-sm">
                         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-                        <p className="mt-4 text-gray-600">Loading applications...</p>
+                        <p className="mt-4 text-gray-600">Loading saved jobs...</p>
                     </div>
-                ) : applications.length === 0 ? (
-                    <div className="text-center py-12 bg-white rounded-lg shadow">
-                        <Briefcase className="w-16 h-16 mx-auto text-gray-400 mb-4" />
-                        <h2 className="text-xl font-semibold text-gray-700 mb-2">No Applications Yet</h2>
-                        <p className="text-gray-600 mb-4">Start applying to jobs from the Jobs page</p>
-                        <a
-                            href="/jobs"
-                            className="inline-block px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-700"
-                        >
-                            Browse Jobs
-                        </a>
+                ) : filteredApplications.length === 0 ? (
+                    <div className="text-center py-16 bg-white rounded-lg shadow-sm">
+                        {activeTab === 'all' ? (
+                            <>
+                                <Bookmark className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+                                <h2 className="text-xl font-semibold text-gray-700 mb-2">No Saved Jobs Yet</h2>
+                                <p className="text-gray-600 mb-6">Start saving jobs from the Jobs page to track your applications</p>
+                                <a
+                                    href="/jobs"
+                                    className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
+                                >
+                                    <Briefcase size={18} />
+                                    Browse Jobs
+                                </a>
+                            </>
+                        ) : (
+                            <>
+                                {STATUS_TABS.find(t => t.value === activeTab)?.icon && (
+                                    <div className="flex justify-center mb-4">
+                                        {(() => {
+                                            const TabIcon = STATUS_TABS.find(t => t.value === activeTab)!.icon;
+                                            return <TabIcon className="w-16 h-16 text-gray-400" />;
+                                        })()}
+                                    </div>
+                                )}
+                                <h2 className="text-xl font-semibold text-gray-700 mb-2">
+                                    No {STATUS_TABS.find(t => t.value === activeTab)?.label} Jobs
+                                </h2>
+                                <p className="text-gray-600">
+                                    You don't have any jobs with this status yet.
+                                </p>
+                            </>
+                        )}
                     </div>
                 ) : (
-                    <div className="space-y-4">
-                        {applications.map((app) => (
-                            <div key={app.id} className="bg-white rounded-lg shadow p-6 hover:shadow-md transition">
-                                <div className="flex justify-between items-start mb-4">
-                                    <div className="flex-1">
-                                        <h2 className="text-xl font-semibold text-gray-800 mb-2">
-                                            {app.job.title}
-                                        </h2>
-                                        <div className="flex flex-wrap gap-4 text-sm text-gray-600">
-                                            <span className="flex items-center gap-1">
-                                                <Briefcase size={16} />
-                                                {app.job.company}
-                                            </span>
-                                            {app.job.location && (
-                                                <span className="flex items-center gap-1">
-                                                    <MapPin size={16} />
-                                                    {app.job.location}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => handleRemove(app.job_id, app.id)}
-                                        className="text-red-600 hover:text-red-800 p-2"
-                                        title="Remove application"
-                                    >
-                                        <Trash2 size={20} />
-                                    </button>
-                                </div>
-
-                                {app.job.description && (
-                                    <p className="text-gray-700 mb-4 line-clamp-2">{app.job.description}</p>
-                                )}
-
-                                <div className="flex justify-between items-center pt-4 border-t">
-                                    <div className="flex items-center gap-2 text-sm text-gray-500">
-                                        <Calendar size={16} />
-                                        <span>Applied: {formatDate(app.applied_at)}</span>
-                                        {app.job.posted_date && (
-                                            <span className="ml-4">Posted: {formatDate(app.job.posted_date)}</span>
-                                        )}
-                                    </div>
-                                    {app.job.job_url && (
-                                        <a
-                                            href={app.job.job_url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded"
-                                        >
-                                            View Job <ExternalLink size={16} />
-                                        </a>
-                                    )}
-                                </div>
-                            </div>
+                    <div className="grid gap-4">
+                        {filteredApplications.map((app) => (
+                            <JobCard
+                                key={app.id}
+                                job={applicationToJob(app)}
+                                onApplicationUpdate={handleApplicationUpdate}
+                                onPrepareInterview={handlePrepareInterview}
+                                onPrepareCV={handlePrepareCV}
+                                onPrepareCoverLetter={handlePrepareCoverLetter}
+                                preparationStatus={preparationStatuses[app.job_id]}
+                            />
                         ))}
                     </div>
                 )}

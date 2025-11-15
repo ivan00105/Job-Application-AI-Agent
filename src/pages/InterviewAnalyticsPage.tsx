@@ -84,7 +84,7 @@ export const InterviewAnalyticsPage = () => {
         <div className="flex items-center justify-between">
           <div>
             <button
-              onClick={() => navigate('/interview')}
+              onClick={() => navigate('/interviews')}
               className="flex items-center text-gray-600 hover:text-gray-900 mb-2"
             >
               <ArrowLeft className="h-5 w-5 mr-2" />
@@ -103,7 +103,7 @@ export const InterviewAnalyticsPage = () => {
               Complete some interview practice sessions to see your analytics.
             </p>
             <button
-              onClick={() => navigate('/interview')}
+              onClick={() => navigate('/interviews')}
               className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition"
             >
               Start Practicing

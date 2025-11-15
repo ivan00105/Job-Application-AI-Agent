@@ -91,7 +91,7 @@ export const jobsAPI = {
     query?: string;
     location?: string;
     min_salary?: number;
-    hide_applied?: boolean;
+    hide_saved?: boolean;
     limit?: number;
     offset?: number;
   }) => {
@@ -99,8 +99,67 @@ export const jobsAPI = {
     return response.data;
   },
 
+  searchVector: async (params: {
+    query: string;
+    location?: string;
+    hide_saved?: boolean;
+    limit?: number;
+    offset?: number;
+    use_llm_enhancement?: boolean;
+    score_threshold?: number;
+  }) => {
+    const { query, location, hide_saved, limit, offset, use_llm_enhancement, score_threshold } = params;
+    
+    // Body contains the JobDataSearch model fields
+    const body: any = {
+      query,
+      limit: limit || 50,
+    };
+    
+    if (use_llm_enhancement !== undefined) {
+      body.use_llm_enhancement = use_llm_enhancement;
+    }
+    
+    if (score_threshold !== undefined) {
+      body.score_threshold = score_threshold;
+    }
+    
+    // Query parameters for additional filters
+    const queryParams: any = {
+      limit: limit || 50,
+      offset: offset || 0,
+      hide_saved: hide_saved || false,
+    };
+    
+    if (location) {
+      queryParams.location = location;
+    }
+    
+    const response = await api.post('/jobs/search-vector', body, {
+      params: queryParams
+    });
+    return response.data;
+  },
+
   getById: async (id: string) => {
     const response = await api.get(`/jobs/${id}`);
+    return response.data;
+  },
+
+  getRecommended: async (params?: {
+    limit?: number;
+    offset?: number;
+    hide_saved?: boolean;
+  }) => {
+    const response = await api.get('/jobs/recommended', { params });
+    return response.data;
+  },
+
+  getSimilar: async (jobId: string, params?: {
+    limit?: number;
+    hide_saved?: boolean;
+  }) => {
+    const response = await api.get(`/jobs/${jobId}/similar`, { params });
     return response.data;
   },
 };
@@ -120,9 +179,18 @@ export const matchesAPI = {
 
 // Applications API
 export const applicationsAPI = {
-  markApplied: async (jobId: string, notes?: string) => {
+  markApplied: async (jobId: string, status: string = 'applied', notes?: string) => {
     const response = await api.post('/applications/mark-applied', {
       job_id: jobId,
+      status,
+      notes
+    });
+    return response.data;
+  },
+
+  updateStatus: async (jobId: string, status: string, notes?: string) => {
+    const response = await api.put(`/applications/${jobId}/status`, {
+      status,
       notes
     });
     return response.data;
@@ -140,6 +208,27 @@ export const applicationsAPI = {
 
   remove: async (jobId: string) => {
     await api.delete(`/applications/${jobId}`);
+  },
+
+  // Preparation endpoints
+  prepareInterview: async (jobId: string) => {
+    const response = await api.post(`/applications/${jobId}/prepare/interview`);
+    return response.data;
+  },
+
+  prepareCV: async (jobId: string) => {
+    const response = await api.post(`/applications/${jobId}/prepare/cv`);
+    return response.data;
+  },
+
+  prepareCoverLetter: async (jobId: string) => {
+    const response = await api.post(`/applications/${jobId}/prepare/cover-letter`);
+    return response.data;
+  },
+
+  getPreparationStatus: async (jobId: string) => {
+    const response = await api.get(`/applications/${jobId}/prepare/status`);
+    return response.data;
   },
 };
 

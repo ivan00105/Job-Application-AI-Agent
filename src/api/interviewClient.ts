@@ -126,6 +126,11 @@ export const interviewAPI = {
     return response.data;
   },
 
+  getSessionsByJob: async (jobId: string): Promise<SessionHistory> => {
+    const response = await apiClient.get(`/interview/sessions/job/${jobId}`);
+    return response.data;
+  },
+
   getSessionDetail: async (sessionId: string): Promise<SessionDetail> => {
     const response = await apiClient.get(`/interview/sessions/${sessionId}`);
     return response.data;

@@ -10,6 +10,9 @@ import { InterviewPrepPage } from './pages/InterviewPrepPage';
 import { InterviewSessionPage } from './pages/InterviewSessionPage';
 import { InterviewResultsPage } from './pages/InterviewResultsPage';
 import { InterviewAnalyticsPage } from './pages/InterviewAnalyticsPage';
+import { InterviewManagementPage } from './pages/InterviewManagementPage';
+import { TailoredCVPage } from './pages/TailoredCVPage';
+import { CoverLetterPage } from './pages/CoverLetterPage';
 import './index.css';
 
 function App() {
@@ -54,7 +57,7 @@ function App() {
             path="/interview"
             element={
               <ProtectedRoute>
-                <InterviewPrepPage />
+                <Navigate to="/interviews" replace />
               </ProtectedRoute>
             }
           />
@@ -79,6 +82,30 @@ function App() {
             element={
               <ProtectedRoute>
                 <InterviewAnalyticsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/interviews"
+            element={
+              <ProtectedRoute>
+                <InterviewManagementPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/applications/prepare/cv/:id"
+            element={
+              <ProtectedRoute>
+                <TailoredCVPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/applications/prepare/cover-letter/:id"
+            element={
+              <ProtectedRoute>
+                <CoverLetterPage />
               </ProtectedRoute>
             }
           />

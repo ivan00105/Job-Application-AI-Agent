@@ -4,11 +4,32 @@ Application models for tracking job applications.
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+from enum import Enum
+
+
+class ApplicationStatusEnum(str, Enum):
+    """Valid application statuses"""
+    SAVED = "saved"
+    APPLIED = "applied"
+    INTERVIEWING = "interviewing"
+    OFFER = "offer"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    DECLINED = "declined"
+    WITHDRAWN = "withdrawn"
+    NOT_INTERESTED = "not_interested"
 
 
 class ApplicationCreate(BaseModel):
     """Create application request"""
     job_id: str
+    status: Optional[str] = "saved"  # Default to 'saved' instead of 'applied'
+    notes: Optional[str] = None
+
+
+class ApplicationUpdate(BaseModel):
+    """Update application status"""
+    status: str
     notes: Optional[str] = None
 
 

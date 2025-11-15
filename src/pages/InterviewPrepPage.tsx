@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { useNavigate } from 'react-router-dom';
 import { interviewAPI, StartSessionRequest } from '../api/interviewClient';
-import { Brain, Briefcase, TrendingUp, Clock, BookOpen, ArrowRight } from 'lucide-react';
+import { Brain, Briefcase, TrendingUp, Clock, BookOpen, ArrowRight, MessageSquare } from 'lucide-react';
 
 export const InterviewPrepPage = () => {
   const navigate = useNavigate();
@@ -55,6 +55,13 @@ export const InterviewPrepPage = () => {
               Practice with AI-powered mock interviews for IT and Finance roles
             </p>
           </div>
+          <button
+            onClick={() => navigate('/interviews')}
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium flex items-center gap-2"
+          >
+            <MessageSquare className="h-5 w-5" />
+            View All Interviews
+          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -132,22 +139,40 @@ export const InterviewPrepPage = () => {
 
         {recentSessions.length > 0 && (
           <div className="bg-white border rounded-xl p-6">
-            <div className="flex items-center mb-4">
-              <Clock className="h-6 w-6 text-gray-600 mr-2" />
-              <h2 className="text-xl font-bold text-gray-900">Recent Practice Sessions</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center">
+                <Clock className="h-6 w-6 text-gray-600 mr-2" />
+                <h2 className="text-xl font-bold text-gray-900">Recent Practice Sessions</h2>
+              </div>
+              <button
+                onClick={() => navigate('/interviews')}
+                className="text-blue-600 hover:text-blue-700 font-medium flex items-center text-sm"
+              >
+                View All Interviews
+                <ArrowRight className="ml-1 h-4 w-4" />
+              </button>
             </div>
             <div className="space-y-3">
-              {recentSessions.map((session) => (
+              {recentSessions.slice(0, 5).map((session) => (
                 <div
                   key={session.id}
                   className="flex items-center justify-between bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition cursor-pointer"
-                  onClick={() => navigate(`/interview/session/${session.id}/results`)}
+                  onClick={() => {
+                    if (session.status === 'active') {
+                      navigate(`/interview/session/${session.id}`);
+                    } else if (session.status === 'completed') {
+                      navigate(`/interviews?highlight=${session.id}`);
+                    } else {
+                      navigate('/interviews');
+                    }
+                  }}
                 >
                   <div className="flex items-center">
                     <Briefcase className="h-5 w-5 text-gray-600 mr-3" />
                     <div>
                       <div className="font-medium text-gray-900">
                         {session.domain} Interview
+                        {session.job_id && <span className="text-xs text-gray-500 ml-2">(Job-specific)</span>}
                       </div>
                       <div className="text-sm text-gray-500">
                         {new Date(session.started_at).toLocaleDateString()} •{' '}

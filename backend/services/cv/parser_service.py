@@ -3,8 +3,21 @@ import fitz
 import httpx
 import json
 import os
+import time
 from typing import Dict, Any, BinaryIO
 from config import get_settings
+
+# Import LLM logger
+try:
+    from backend.services.shared.llm_logger import log_llm_call
+except ImportError:
+    try:
+        from services.shared.llm_logger import log_llm_call
+    except ImportError:
+        # Fallback if logger not available
+        def log_llm_call(*args, **kwargs):
+            pass
+
 try:
     from docx import Document
 except ImportError:
@@ -127,40 +140,116 @@ CV Text:
 
 Return ONLY the JSON, no markdown, no explanations."""
 
+        system_prompt = "You are a precise CV parser. Return only valid JSON."
+        start_time = time.time()
+        
         if self.use_openrouter:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.settings.openrouter_base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.settings.openrouter_model,
-                        "messages": [
-                            {"role": "system", "content": "You are a precise CV parser. Return only valid JSON."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.1
-                    }
+            request_data = {
+                "model": self.settings.openrouter_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1
+            }
+            
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        f"{self.settings.openrouter_base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=request_data
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    generated_text = result["choices"][0]["message"]["content"]
+                    
+                    duration_ms = (time.time() - start_time) * 1000
+                    usage = result.get("usage", {})
+                    tokens_used = usage.get("total_tokens")
+                    
+                    # Log the LLM call
+                    log_llm_call(
+                        provider="openrouter",
+                        model=self.settings.openrouter_model,
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        response=generated_text[:500] if len(generated_text) > 500 else generated_text,  # Truncate for logging
+                        request_data=request_data,
+                        response_data=result,
+                        duration_ms=duration_ms,
+                        tokens_used=tokens_used,
+                        metadata={"function": "parse_cv_with_llm", "cv_text_length": len(cv_text)}
+                    )
+            except Exception as e:
+                duration_ms = (time.time() - start_time) * 1000
+                error_msg = str(e)
+                log_llm_call(
+                    provider="openrouter",
+                    model=self.settings.openrouter_model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    error=error_msg,
+                    request_data=request_data,
+                    duration_ms=duration_ms,
+                    metadata={"function": "parse_cv_with_llm", "cv_text_length": len(cv_text)}
                 )
-                response.raise_for_status()
-                result = response.json()
-                generated_text = result["choices"][0]["message"]["content"]
+                raise
         else:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": self.settings.ollama_chat_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json"
-                    }
+            request_data = {
+                "model": self.settings.ollama_chat_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json"
+            }
+            
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_base_url}/api/generate",
+                        json=request_data
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    generated_text = result.get("response", "")
+                    
+                    duration_ms = (time.time() - start_time) * 1000
+                    
+                    # Extract token usage if available (Ollama format)
+                    tokens_used = None
+                    if "eval_count" in result:
+                        tokens_used = result.get("eval_count")  # Ollama uses eval_count
+                    
+                    # Log the LLM call
+                    log_llm_call(
+                        provider="ollama",
+                        model=self.settings.ollama_chat_model,
+                        prompt=prompt,
+                        system_prompt=None,  # Ollama doesn't use system prompts in /api/generate
+                        response=generated_text[:500] if len(generated_text) > 500 else generated_text,  # Truncate for logging
+                        request_data=request_data,
+                        response_data=result,
+                        duration_ms=duration_ms,
+                        tokens_used=tokens_used,
+                        metadata={"function": "parse_cv_with_llm", "cv_text_length": len(cv_text)}
+                    )
+            except Exception as e:
+                duration_ms = (time.time() - start_time) * 1000
+                error_msg = str(e)
+                log_llm_call(
+                    provider="ollama",
+                    model=self.settings.ollama_chat_model,
+                    prompt=prompt,
+                    system_prompt=None,
+                    error=error_msg,
+                    request_data=request_data,
+                    duration_ms=duration_ms,
+                    metadata={"function": "parse_cv_with_llm", "cv_text_length": len(cv_text)}
                 )
-                response.raise_for_status()
-                result = response.json()
-                generated_text = result.get("response", "")
+                raise
         
         try:
             generated_text = generated_text.strip()

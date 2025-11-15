@@ -2,16 +2,32 @@
 Seed initial interview questions for IT and Finance domains.
 Run this script to populate the interview_questions table with sample questions.
 """
+import asyncio
+import asyncpg
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from database.supabase_client import get_supabase
+from pathlib import Path
 import uuid
 
-def seed_questions():
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from config import get_settings
+
+async def seed_questions():
     """Seed the database with initial interview questions."""
-    supabase = get_supabase()
+    settings = get_settings()
+    
+    # Use postgres_db if available, otherwise postgres_database
+    db_name = settings.postgres_db or settings.postgres_database
+    
+    conn = await asyncpg.connect(
+        host=settings.postgres_host,
+        port=settings.postgres_port,
+        database=db_name,
+        user=settings.postgres_user,
+        password=settings.postgres_password
+    )
 
     it_questions = [
         {
@@ -167,16 +183,46 @@ def seed_questions():
     print(f"Inserting {len(all_questions)} questions...")
 
     try:
-        result = supabase.table("interview_questions").insert(all_questions).execute()
-        print(f"✅ Successfully inserted {len(result.data)} questions!")
+        inserted_count = 0
+        for q in all_questions:
+            # Map category to question_type (the table uses question_type, not category)
+            question_type = q.get("category", "technical")
+            
+            await conn.execute("""
+                INSERT INTO interview_questions 
+                (id, question_text, question_type, role_type, domain, difficulty, is_active)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO NOTHING
+            """,
+                q["id"],
+                q["question_text"],
+                question_type,
+                q["role_type"],
+                q["domain"],
+                q["difficulty"],
+                q["is_active"]
+            )
+            inserted_count += 1
+        
+        print(f"✅ Successfully inserted {inserted_count} questions!")
         print("\nQuestions by domain:")
         print(f"  - IT: {len(it_questions)}")
         print(f"  - Finance: {len(finance_questions)}")
         print(f"  - General: {len(general_questions)}")
+        
+        await conn.close()
     except Exception as e:
         print(f"❌ Error inserting questions: {e}")
+        import traceback
+        traceback.print_exc()
+        await conn.close()
+        raise
 
 if __name__ == "__main__":
     print("🌱 Seeding interview questions...")
-    seed_questions()
-    print("✨ Done!")
+    try:
+        asyncio.run(seed_questions())
+        print("✨ Done!")
+    except Exception as e:
+        print(f"❌ Failed to seed questions: {e}")
+        sys.exit(1)
