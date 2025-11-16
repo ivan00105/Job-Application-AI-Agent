@@ -51,13 +51,17 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     context_key TEXT NOT NULL DEFAULT 'global',
     question_text TEXT NOT NULL,
     answer_text TEXT,
+    company_name TEXT,
+    job_url TEXT,
     qdrant_synced BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, context_key, question_text)
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, context_key, question_text, company_name)
 );
 
 CREATE INDEX IF NOT EXISTS agent_memory_user_idx ON agent_memory(user_id);
 CREATE INDEX IF NOT EXISTS agent_memory_context_idx ON agent_memory(context_key);
+CREATE INDEX IF NOT EXISTS agent_memory_company_idx ON agent_memory(user_id, company_name);
 
 -- Job matches with scoring and explanations
 CREATE TABLE IF NOT EXISTS job_matches (

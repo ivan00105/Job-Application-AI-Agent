@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { applicationsAPI } from '../api/client';
 import { interviewAPI } from '../api/interviewClient';
 
-type ApplicationStatus = 
+type ApplicationStatus =
     | 'saved'
     | 'applied'
     | 'interviewing'
@@ -118,7 +118,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
 
     const handleStatusChange = async (newStatus: ApplicationStatus) => {
         if (loading) return;
-        
+
         setIsOpen(false);
         setLoading(true);
         try {
@@ -147,7 +147,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
 
     const handleFindSimilar = async () => {
         if (findingSimilar || !onFindSimilar) return;
-        
+
         setFindingSimilar(true);
         try {
             await onFindSimilar(job.id);
@@ -297,7 +297,8 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                 >
                     View Job
                 </a>
-                
+
+
                 {onFindSimilar && (
                     <button
                         type="button"
@@ -329,8 +330,8 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                         >
                             <Sparkles className="h-4 w-4" />
                             Prepare
-                            <ChevronDown 
-                                size={16} 
+                            <ChevronDown
+                                size={16}
                                 className={`transition-transform duration-200 ${isPrepareMenuOpen ? 'transform rotate-180' : ''}`}
                             />
                         </button>
@@ -351,7 +352,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                                             <div className="text-xs text-gray-500">Practice with job-specific questions</div>
                                         </div>
                                     </button>
-                                    
+
                                     {preparationStatus?.has_tailored_cv && preparationStatus?.tailored_cv_id ? (
                                         <button
                                             type="button"
@@ -384,7 +385,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                                             </div>
                                         </button>
                                     )}
-                                    
+
                                     {preparationStatus?.has_cover_letter && preparationStatus?.cover_letter_id ? (
                                         <button
                                             type="button"
@@ -422,7 +423,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                         )}
                     </div>
                 )}
-                
+
                 {/* Beautiful Status Selector */}
                 <div className="relative" ref={dropdownRef}>
                     <button
@@ -460,8 +461,8 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                             )}
                         </div>
                         {!loading && (
-                            <ChevronDown 
-                                size={16} 
+                            <ChevronDown
+                                size={16}
                                 className={`transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
                             />
                         )}
@@ -474,7 +475,7 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                                 {statusOptions.map((option) => {
                                     const OptionIcon = option.icon;
                                     const isSelected = status === option.value;
-                                    
+
                                     return (
                                         <button
                                             key={option.value || 'none'}
@@ -482,16 +483,16 @@ export const JobCard = ({ job, onApplicationUpdate, onFindSimilar, onPrepareInte
                                             onClick={() => handleStatusChange(option.value)}
                                             className={`
                                                 w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors
-                                                ${isSelected 
-                                                    ? `${option.bgColor} ${option.color} font-semibold` 
+                                                ${isSelected
+                                                    ? `${option.bgColor} ${option.color} font-semibold`
                                                     : 'text-gray-700 hover:bg-gray-50'
                                                 }
                                                 ${option.value === null ? 'border-b border-gray-200' : ''}
                                             `}
                                         >
                                             {OptionIcon ? (
-                                                <OptionIcon 
-                                                    size={18} 
+                                                <OptionIcon
+                                                    size={18}
                                                     className={isSelected ? option.color : 'text-gray-400'}
                                                 />
                                             ) : (

@@ -1,154 +1,124 @@
-# Job Application Agent
+# Job Application AI Agent
 
-AI-powered job search and application automation system.
+AI-powered job search, CV matching, and auto-fill applications.
 
-## 📚 Documentation
+## Quick Start
 
-**Essential Reading:**
-- [LOCAL_SETUP_GUIDE.md](LOCAL_SETUP_GUIDE.md) - Complete setup instructions for first-time users
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Quick reference for making changes (read this before coding!)
+### Backend
+```bash
+cd backend
+.\venv\Scripts\Activate.ps1
+python main.py
+```
 
-**Additional Resources:**
-- [backend/README.md](backend/README.md) - Backend API reference and structure
-- [FEATURE_IDEAS.md](FEATURE_IDEAS.md) - Roadmap and planned features
+### Frontend  
+```bash
+npm run dev
+```
+
+### Chrome Extension
+```bash
+cd extension
+pip install Pillow
+python create-icons.py
+# chrome://extensions/ → Load unpacked → Select extension/ folder
+```
+
+## Features
+
+- **CV Management**: Upload PDF, auto-parse to structured JSON
+- **Job Search**: Vector similarity search using Qdrant
+- **AI Matching**: Score CV-to-job fit with explanations
+- **Auto-Fill**: Purple floating button on job sites - click to auto-fill forms
+- **Interview Prep**: AI-generated practice questions
+
+## Auto-Fill Usage
+
+1. **Install extension** (see above)
+2. **Log in** to web app → Token syncs automatically
+3. **Navigate** to any job application page
+4. **Look for purple button** (bottom-right corner)
+5. **Click it** when you're ready to auto-fill
+6. **Review** filled fields and submit
+
+That's it! No setup needed.
+
+### Button Status:
+- "AI Auto-Fill" → Ready (click me!)
+- "Analyzing..." → Checking page type
+- "Scraping..." → Finding form fields  
+- "Filling..." → AI filling with your CV
+- "✓ Done" → Complete! Review and submit
+
+## Tech Stack
+
+**Backend:** FastAPI, PostgreSQL, Qdrant, Ollama, OpenRouter  
+**Frontend:** React, TypeScript, Tailwind  
+**Extension:** Chrome Manifest V3
+
+## Environment Setup
+
+Create `backend/.env`:
+```bash
+DB_HOST=your_db_host
+DB_PORT=5432
+DB_NAME=job_application_db
+DB_USER=postgres
+DB_PASSWORD=your_password
+JWT_SECRET_KEY=your_secret
+OLLAMA_BASE_URL=http://localhost:11434
+OPENROUTER_API_KEY=your_key
+QDRANT_URL=http://your_qdrant:6333
+```
 
 ## Project Structure
 
 ```
-├── backend/           # FastAPI backend (Python)
-│   ├── api/          # API endpoints
-│   ├── models/       # Pydantic models
-│   ├── services/     # Business logic (AI will go here)
-│   └── database/     # Database connections
-│
-├── src/              # React frontend (TypeScript)
-│   ├── api/         # API client
-│   ├── components/  # React components
-│   ├── context/     # React context (auth)
-│   └── pages/       # Page components
+backend/
+├── api/              # FastAPI endpoints
+├── models/           # Pydantic models
+├── services/         # Business logic
+│   ├── autofill/    # Auto-fill AI logic
+│   ├── cv/          # CV parsing
+│   └── jobs/        # Job matching
+└── database/        # PostgreSQL client
+
+src/
+├── components/      # React components
+├── pages/          # Page components
+└── api/            # API client
+
+extension/
+├── manifest.json   # Extension config
+├── content.js      # Form scraping & filling
+├── background.js   # API communication
+└── popup.html/js   # Extension UI
 ```
 
-## Quick Start
+## Troubleshooting
 
-### 1. Database Setup
+### Extension button not appearing
+- Reload page (Ctrl+R)
+- Check extension enabled at chrome://extensions/
+- Reload extension (click refresh icon)
 
-The database schema is already created in Supabase. Make sure you have:
-- Supabase project URL
-- Supabase anon key
+### ERR_BLOCKED_BY_CLIENT
+- Disable ad blocker for localhost:5173
+- Or whitelist the extension
 
-### 2. Backend Setup
+### Not logged in error
+- Log into web app at localhost:5173
+- Token syncs automatically
 
-```bash
-cd backend
+### No fields found
+- Make sure you're on application form, not job listing
+- Click "Apply" button on job site first
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+## API Documentation
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env and add your Supabase credentials
-
-# Create test users
-python scripts/create_test_users.py
-
-# Run server
-python main.py
-```
-
-Backend runs at: http://localhost:8000
-API docs at: http://localhost:8000/docs
-
-### 3. Frontend Setup
-
-```bash
-# Install dependencies
-npm install
-
-# Run development server
-npm run dev
-```
-
-Frontend runs at: http://localhost:5173
-
-## Test Credentials
-
-After running the test user script:
-- Username: `testuser1` | Password: `password123`
-- Username: `testuser2` | Password: `password123`
-- Username: `demo` | Password: `demo123`
-
-## Features
-
-### Current (Foundation)
-- ✅ User authentication (JWT)
-- ✅ CV upload interface
-- ✅ Job listing browse
-- ✅ Job matching interface
-- ✅ Responsive UI with Tailwind CSS
-
-### Coming Soon (AI Phase)
-- 🔄 CV parsing with OCR
-- 🔄 RAG-powered document generation
-- 🔄 Intelligent job matching algorithm
-- 🔄 Job scraping from multiple sources
-- 🔄 Semi-automated application filling
-
-## Development
-
-### Backend
-- FastAPI with async support
-- JWT authentication
-- Supabase PostgreSQL + pgvector
-- Auto-generated API docs
-
-### Frontend
-- React 18 with TypeScript
-- React Router for navigation
-- Axios for API calls
-- Tailwind CSS for styling
-
-## Architecture
-
-The system is designed to be AI-ready:
-- Backend services folder prepared for AI components
-- Vector embeddings supported in database
-- API structure ready for ML integration
-- All placeholder endpoints return proper responses
-
-## CV Parsing Template
-
-The CV parser uses OpenRouter/Ollama to extract structured data from PDF/DOCX files following this JSON schema:
-
-```json
-{
-  "personal_info": {
-    "first_name", "last_name", "email", "phone", "location",
-    "linkedin", "github", "website"
-  },
-  "professional_summary": "string",
-  "work_experience": [{"job_title", "company", "location", "start_date", "end_date", "responsibilities": []}],
-  "education": [{"degree", "field_of_study", "institution", "location", "graduation_year", "gpa"}],
-  "skills": {"technical": [], "soft": [], "tools": []},
-  "certifications": [{"name", "issuer", "date_obtained", "expiry_date"}],
-  "languages": [{"language", "proficiency"}],
-  "projects": [{"name", "description", "technologies": [], "url"}]
-}
-```
-
-See `backend/services/cv/parser_service.py` for the full template used by the LLM.
-
-## Next Steps
-
-1. Implement CV parser with OCR (PaddleOCR/EasyOCR)
-2. Build job matching algorithm with vector similarity
-3. Create RAG system for document generation
-4. Add job scrapers for real data
-5. Implement application automation
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
 
 ## License
 
-POC Project - Academic Use
+MIT

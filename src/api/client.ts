@@ -109,32 +109,32 @@ export const jobsAPI = {
     score_threshold?: number;
   }) => {
     const { query, location, hide_saved, limit, offset, use_llm_enhancement, score_threshold } = params;
-    
+
     // Body contains the JobDataSearch model fields
     const body: any = {
       query,
       limit: limit || 50,
     };
-    
+
     if (use_llm_enhancement !== undefined) {
       body.use_llm_enhancement = use_llm_enhancement;
     }
-    
+
     if (score_threshold !== undefined) {
       body.score_threshold = score_threshold;
     }
-    
+
     // Query parameters for additional filters
     const queryParams: any = {
       limit: limit || 50,
       offset: offset || 0,
       hide_saved: hide_saved || false,
     };
-    
+
     if (location) {
       queryParams.location = location;
     }
-    
+
     const response = await api.post('/jobs/search-vector', body, {
       params: queryParams
     });
@@ -229,6 +229,39 @@ export const applicationsAPI = {
   getPreparationStatus: async (jobId: string) => {
     const response = await api.get(`/applications/${jobId}/prepare/status`);
     return response.data;
+  },
+};
+
+// Autofill API
+export const autofillAPI = {
+  analyzeFields: async (url: string, fields: any[], companyName?: string) => {
+    const response = await api.post('/autofill/analyze-fields', {
+      url,
+      fields,
+      company_name: companyName,
+    });
+    return response.data;
+  },
+
+  saveAnswer: async (fieldLabel: string, answer: string, contextType: 'global' | 'company', companyName?: string, jobUrl?: string) => {
+    const response = await api.post('/autofill/save-answer', {
+      field_label: fieldLabel,
+      answer,
+      context_type: contextType,
+      company_name: companyName,
+      job_url: jobUrl,
+    });
+    return response.data;
+  },
+
+  getMemory: async (companyName?: string) => {
+    const params = companyName ? `?company_name=${encodeURIComponent(companyName)}` : '';
+    const response = await api.get(`/autofill/memory${params}`);
+    return response.data;
+  },
+
+  deleteMemory: async (memoryId: string) => {
+    await api.delete(`/autofill/memory/${memoryId}`);
   },
 };
 

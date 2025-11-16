@@ -538,7 +538,7 @@ async def get_similar_jobs(
         
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        
+
         # Build search query from job title, company, and description
         search_query_parts = []
         if job.get("title"):

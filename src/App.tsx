@@ -6,13 +6,13 @@ import { DashboardPage } from './pages/DashboardPage';
 import { JobsPage } from './pages/JobsPage';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { ProfilePage } from './pages/ProfilePage';
-import { InterviewPrepPage } from './pages/InterviewPrepPage';
 import { InterviewSessionPage } from './pages/InterviewSessionPage';
 import { InterviewResultsPage } from './pages/InterviewResultsPage';
 import { InterviewAnalyticsPage } from './pages/InterviewAnalyticsPage';
 import { InterviewManagementPage } from './pages/InterviewManagementPage';
 import { TailoredCVPage } from './pages/TailoredCVPage';
 import { CoverLetterPage } from './pages/CoverLetterPage';
+import { MemoryManagementPage } from './pages/MemoryManagementPage';
 import './index.css';
 
 function App() {
@@ -106,6 +106,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <CoverLetterPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/memory"
+            element={
+              <ProtectedRoute>
+                <MemoryManagementPage />
               </ProtectedRoute>
             }
           />

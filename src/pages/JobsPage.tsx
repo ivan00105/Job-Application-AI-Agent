@@ -21,13 +21,13 @@ export const JobsPage = () => {
   const [totalJobs, setTotalJobs] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
-  
+
   // Active search values (used for display and search execution)
   const [activeSearchQuery, setActiveSearchQuery] = useState('');
   const [activeLocationQuery, setActiveLocationQuery] = useState('');
-  
+
   // Search process tracking
-  const [searchSteps, setSearchSteps] = useState<Array<{step: string, status: 'pending' | 'active' | 'completed' | 'skipped', message?: string}>>([]);
+  const [searchSteps, setSearchSteps] = useState<Array<{ step: string, status: 'pending' | 'active' | 'completed' | 'skipped', message?: string }>>([]);
   const [searchSource, setSearchSource] = useState<string>('');
 
   // Load jobs function (called manually or when filters change after initial search)
@@ -40,14 +40,14 @@ export const JobsPage = () => {
       setSearchSteps([]);
       setSearchSource('');
     }
-    
+
     // Use override values if provided, otherwise use active search values
     const queryToUse = searchQueryOverride !== undefined ? searchQueryOverride : activeSearchQuery;
     const locationToUse = locationQueryOverride !== undefined ? locationQueryOverride : activeLocationQuery;
-    
+
     try {
       const offset = reset ? 0 : loadedCount;
-      
+
       // Use vector similarity search if there's a search query
       // Otherwise use simple keyword search
       if (queryToUse.trim()) {
@@ -58,17 +58,17 @@ export const JobsPage = () => {
           { step: 'ai', status: 'pending', message: 'AI Analysis...' },
           { step: 'match', status: 'pending', message: 'Job Matching...' }
         ]);
-        
+
         setTimeout(() => {
           setSearchSteps(prev => prev.map(s => s.step === 'cv' ? { ...s, status: 'completed' as const } : s));
           setSearchSteps(prev => prev.map(s => s.step === 'saved' ? { ...s, status: 'active' as const } : s));
         }, 300);
-        
+
         setTimeout(() => {
           setSearchSteps(prev => prev.map(s => s.step === 'saved' ? { ...s, status: 'completed' as const } : s));
           setSearchSteps(prev => prev.map(s => s.step === 'ai' ? { ...s, status: 'active' as const } : s));
         }, 600);
-        
+
         setTimeout(() => {
           setSearchSteps(prev => prev.map(s => s.step === 'ai' ? { ...s, status: 'completed' as const } : s));
           setSearchSteps(prev => prev.map(s => s.step === 'match' ? { ...s, status: 'active' as const } : s));
@@ -92,7 +92,7 @@ export const JobsPage = () => {
           setTotalJobs(data.total || 0);
           setSearchSteps(prev => prev.map(s => s.step === 'match' ? { ...s, status: 'completed' as const, message: `Found ${data.total || 0} matching jobs` } : s));
           setSearchSource('vector_search');
-          
+
           // Load preparation statuses for saved/applied jobs
           if (reset) {
             loadPreparationStatuses(data.jobs || []);
@@ -112,7 +112,7 @@ export const JobsPage = () => {
             offset: offset,
             hide_saved: hideSaved
           };
-          
+
           if (locationToUse.trim()) {
             searchParams.location = locationToUse.trim();
           }
@@ -128,7 +128,7 @@ export const JobsPage = () => {
           setTotalJobs(data.total || 0);
           setSearchSteps(prev => prev.map(s => s.step === 'match' ? { ...s, status: 'completed' as const, message: `Found ${data.total || 0} jobs` } : s));
           setSearchSource('keyword_search');
-          
+
           // Load preparation statuses for saved/applied jobs
           if (reset) {
             loadPreparationStatuses(data.jobs || []);
@@ -143,7 +143,7 @@ export const JobsPage = () => {
           { step: 'ai', status: 'pending', message: 'AI Analysis...' },
           { step: 'match', status: 'pending', message: 'Job Matching...' }
         ]);
-        
+
         try {
           const data = await jobsAPI.getRecommended({
             limit: pageSize,
@@ -158,11 +158,11 @@ export const JobsPage = () => {
             setLoadedCount(prev => prev + (data.jobs?.length || 0));
           }
           setTotalJobs(data.total || 0);
-          
+
           // Update steps based on source
           const source = data.source || 'latest';
           setSearchSource(source);
-          
+
           if (source === 'cv_matches' || source === 'cv_vector_search') {
             setSearchSteps([
               { step: 'cv', status: 'completed', message: 'CV profile found' },
@@ -199,7 +199,7 @@ export const JobsPage = () => {
             offset: offset,
             hide_saved: hideSaved
           };
-          
+
           if (activeLocationQuery.trim()) {
             searchParams.location = activeLocationQuery.trim();
           }
@@ -215,7 +215,7 @@ export const JobsPage = () => {
           setTotalJobs(data.total || 0);
           setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const })));
           setSearchSource('fallback');
-          
+
           // Load preparation statuses for saved/applied jobs
           if (reset) {
             loadPreparationStatuses(data.jobs || []);
@@ -281,13 +281,13 @@ export const JobsPage = () => {
 
   const handleLoadMore = async () => {
     if (loadingMore || loadedCount >= totalJobs || !hasSearched) return;
-    
+
     setLoadingMore(true);
     setError(null);
-    
+
     try {
       const offset = loadedCount;
-      
+
       // Use the same logic as loadJobs but for loading more
       if (activeSearchQuery.trim()) {
         // Has search query - use search
@@ -310,7 +310,7 @@ export const JobsPage = () => {
             offset: offset,
             hide_saved: hideSaved
           };
-          
+
           if (activeLocationQuery.trim()) {
             searchParams.location = activeLocationQuery.trim();
           }
@@ -342,11 +342,11 @@ export const JobsPage = () => {
           offset: 0,
           hide_saved: hideSaved
         };
-        
+
         if (activeSearchQuery.trim()) {
           searchParams.query = activeSearchQuery.trim();
         }
-        
+
         if (activeLocationQuery.trim()) {
           searchParams.location = activeLocationQuery.trim();
         }
@@ -375,29 +375,29 @@ export const JobsPage = () => {
       { step: 'ai', status: 'pending', message: 'AI Analysis...' },
       { step: 'match', status: 'pending', message: 'Finding similar jobs...' }
     ]);
-    
+
     try {
       // Update search steps
       setTimeout(() => {
         setSearchSteps(prev => prev.map(s => s.step === 'cv' ? { ...s, status: 'completed' as const } : s));
         setSearchSteps(prev => prev.map(s => s.step === 'saved' ? { ...s, status: 'active' as const } : s));
       }, 300);
-      
+
       setTimeout(() => {
         setSearchSteps(prev => prev.map(s => s.step === 'saved' ? { ...s, status: 'completed' as const } : s));
         setSearchSteps(prev => prev.map(s => s.step === 'ai' ? { ...s, status: 'active' as const } : s));
       }, 600);
-      
+
       setTimeout(() => {
         setSearchSteps(prev => prev.map(s => s.step === 'ai' ? { ...s, status: 'completed' as const } : s));
         setSearchSteps(prev => prev.map(s => s.step === 'match' ? { ...s, status: 'active' as const } : s));
       }, 900);
-      
+
       const data = await jobsAPI.getSimilar(jobId, {
         limit: pageSize,
         hide_saved: hideSaved
       });
-      
+
       setJobs(data.jobs || []);
       setLoadedCount(data.jobs?.length || 0);
       setTotalJobs(data.total || 0);
@@ -407,9 +407,9 @@ export const JobsPage = () => {
       setLocationQuery('');
       setHasSearched(true);
       setSearchSource('similar_jobs');
-      
+
       setSearchSteps(prev => prev.map(s => s.step === 'match' ? { ...s, status: 'completed' as const, message: `Found ${data.total || 0} similar jobs` } : s));
-      
+
       // Load preparation statuses for jobs that are saved/applied
       loadPreparationStatuses(data.jobs || []);
     } catch (err: any) {
@@ -427,9 +427,9 @@ export const JobsPage = () => {
     try {
       // Only check status for jobs that are saved/applied
       const savedJobs = jobsList.filter((job: any) => job.applied || job.application_status === 'saved' || job.application_status === 'applied' || job.application_status === 'interviewing');
-      
+
       if (savedJobs.length === 0) return;
-      
+
       const statusPromises = savedJobs.map(async (job: any) => {
         try {
           const status = await applicationsAPI.getPreparationStatus(job.id);
@@ -438,7 +438,7 @@ export const JobsPage = () => {
           return { jobId: job.id, status: null };
         }
       });
-      
+
       const statuses = await Promise.all(statusPromises);
       const statusMap: Record<string, any> = {};
       statuses.forEach(({ jobId, status }) => {
@@ -556,7 +556,7 @@ export const JobsPage = () => {
                     return <Clock className="h-4 w-4 text-gray-400" />;
                   }
                 };
-                
+
                 const getStepLabel = () => {
                   if (step.step === 'cv') return 'Reading CV';
                   if (step.step === 'saved') return 'Reading Latest Saved Jobs';
@@ -564,14 +564,13 @@ export const JobsPage = () => {
                   if (step.step === 'match') return 'Job Matching';
                   return 'Processing';
                 };
-                
+
                 return (
-                  <div key={index} className={`flex items-center gap-3 text-sm ${
-                    step.status === 'completed' ? 'text-green-700' :
-                    step.status === 'active' ? 'text-blue-700 font-medium' :
-                    step.status === 'skipped' ? 'text-gray-500' :
-                    'text-gray-600'
-                  }`}>
+                  <div key={index} className={`flex items-center gap-3 text-sm ${step.status === 'completed' ? 'text-green-700' :
+                      step.status === 'active' ? 'text-blue-700 font-medium' :
+                        step.status === 'skipped' ? 'text-gray-500' :
+                          'text-gray-600'
+                    }`}>
                     {getIcon()}
                     <span className="flex-1">
                       <span className="font-medium">{getStepLabel()}</span>
@@ -583,20 +582,19 @@ export const JobsPage = () => {
             </div>
           </div>
         )}
-        
+
         {/* Search Source Badge */}
         {!loading && searchSource && jobs.length > 0 && (
           <div className="flex items-center gap-2 text-sm">
             <span className="text-gray-600">Results from:</span>
-            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-              searchSource === 'cv_matches' || searchSource === 'cv_vector_search' 
-                ? 'bg-green-100 text-green-800' 
+            <span className={`px-3 py-1 rounded-full text-xs font-medium ${searchSource === 'cv_matches' || searchSource === 'cv_vector_search'
+                ? 'bg-green-100 text-green-800'
                 : searchSource === 'similar_to_saved'
-                ? 'bg-blue-100 text-blue-800'
-                : searchSource === 'vector_search' || searchSource === 'similar_jobs'
-                ? 'bg-purple-100 text-purple-800'
-                : 'bg-gray-100 text-gray-800'
-            }`}>
+                  ? 'bg-blue-100 text-blue-800'
+                  : searchSource === 'vector_search' || searchSource === 'similar_jobs'
+                    ? 'bg-purple-100 text-purple-800'
+                    : 'bg-gray-100 text-gray-800'
+              }`}>
               {searchSource === 'cv_matches' && '📄 CV Profile Matches'}
               {searchSource === 'cv_vector_search' && '📄 CV-Based Search'}
               {searchSource === 'similar_to_saved' && '🔖 Similar to Saved Jobs'}
@@ -617,7 +615,7 @@ export const JobsPage = () => {
         ) : jobs.length === 0 ? (
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-12 text-center">
             <p className="text-gray-600 mb-2">
-              {activeSearchQuery || activeLocationQuery 
+              {activeSearchQuery || activeLocationQuery
                 ? `No jobs found matching your search criteria.`
                 : `No jobs found. Try adjusting your search filters.`}
             </p>
@@ -635,9 +633,9 @@ export const JobsPage = () => {
           <>
             <div className="grid gap-4">
               {jobs.map((job: any) => (
-                <JobCard 
-                  key={job.id} 
-                  job={job} 
+                <JobCard
+                  key={job.id}
+                  job={job}
                   onApplicationUpdate={handleApplicationUpdate}
                   onFindSimilar={handleFindSimilar}
                   preparationStatus={preparationStatuses[job.id]}
@@ -686,7 +684,7 @@ export const JobsPage = () => {
               <div className="text-sm text-gray-700 text-center">
                 Showing {loadedCount} of {totalJobs} jobs
               </div>
-              
+
               {hasMoreJobs && (
                 <div className="flex justify-center">
                   <button
@@ -707,7 +705,7 @@ export const JobsPage = () => {
                   </button>
                 </div>
               )}
-              
+
               {!hasMoreJobs && totalJobs > 0 && (
                 <div className="text-sm text-gray-500 text-center">
                   All jobs loaded

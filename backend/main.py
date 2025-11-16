@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import auth, cv, jobs, matches, applications, interview
+from api import auth, cv, jobs, matches, applications, interview, autofill
 from config import get_settings
 from database.postgres_client import get_postgres_client
 
@@ -63,6 +63,7 @@ app.include_router(jobs.router, prefix="/api/jobs", tags=["Job Listings"])
 app.include_router(matches.router, prefix="/api/matches", tags=["Job Matching"])
 app.include_router(applications.router, prefix="/api/applications", tags=["Applications"])
 app.include_router(interview.router, prefix="/api/interview", tags=["Interview"])
+app.include_router(autofill.router, prefix="/api/autofill", tags=["Autofill"])
 
 
 @app.get("/")
