@@ -164,12 +164,89 @@ async function handleAutoFillClick() {
 }
 
 /**
+ * Check if a button is an action/navigation button (not a form choice)
+ */
+function isActionButton(button) {
+    const text = button.textContent.toLowerCase().trim();
+    const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+    const dataTest = (button.getAttribute('data-test') || '').toLowerCase();
+
+    // IMPORTANT: Check if button is a CHOICE button first (keep these)
+    // These are buttons used as form selections (like radio buttons)
+    if (isChoiceButton(button)) {
+        return false; // NOT an action button - it's a form choice
+    }
+
+    // Common action button patterns
+    const actionPatterns = [
+        'add', 'save', 'submit', 'next', 'previous', 'back', 'cancel',
+        'close', 'delete', 'remove', 'edit', 'upload', 'download',
+        'continue', 'proceed', 'skip', 'finish', 'done', 'apply now'
+    ];
+
+    // Check if button text/label matches action patterns
+    for (const pattern of actionPatterns) {
+        if (text.includes(pattern) || ariaLabel.includes(pattern) || dataTest.includes(pattern)) {
+            return true;
+        }
+    }
+
+    // Check if button is in an ACTION button group/toolbar (navigation)
+    // BUT: Only if it's NOT a choice button group (radiogroup, list with choices)
+    const parent = button.parentElement;
+    if (parent && (
+        parent.classList.contains('actions') ||
+        parent.classList.contains('toolbar') ||
+        parent.getAttribute('role') === 'toolbar'
+    )) {
+        return true;
+    }
+
+    // If button has an icon but no meaningful text, likely an action button
+    if (button.querySelector('svg, i[class*="icon"]') && text.length < 3) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Check if a button is a choice button (like radio button alternative)
+ */
+function isChoiceButton(button) {
+    // Check if button has aria-pressed (toggle behavior)
+    if (button.hasAttribute('aria-pressed')) {
+        return true;
+    }
+
+    // Check if button is in a radiogroup or list (choice group)
+    const choiceGroup = button.closest('[role="radiogroup"], [role="list"], [role="group"][aria-label*="select"], [class*="select-pill"], [class*="choice"], [class*="option"]');
+    if (choiceGroup) {
+        return true;
+    }
+
+    // Check if button has data-value attribute (common for choice buttons)
+    if (button.hasAttribute('data-value')) {
+        return true;
+    }
+
+    // Check if button text is short and looks like a choice (Mr., Yes, No, etc.)
+    const text = button.textContent.trim();
+    const commonChoices = ['mr', 'mrs', 'ms', 'dr', 'yes', 'no', 'male', 'female', 'other'];
+    if (text.length < 10 && commonChoices.includes(text.toLowerCase())) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * Extract structured form elements with labels and selectors
  * NEW: Smart extraction instead of sending bloated HTML
  */
 function extractFormElements() {
     const elements = [];
-    
+
     // Find all interactive elements (excluding hidden)
     const selectors = [
         'input:not([type="hidden"])',
@@ -182,20 +259,49 @@ function extractFormElements() {
         '[role="radiogroup"]',
         '[contenteditable="true"]'
     ];
-    
+
     document.querySelectorAll(selectors.join(',')).forEach(el => {
         // Skip navigation/header/footer elements
         if (el.closest('nav, header, footer, [role="navigation"]')) return;
-        
+
         // Skip if hidden
         if (el.offsetParent === null && el.type !== 'file') return;
-        
+
+        // Skip file upload inputs (can't programmatically set for security reasons)
+        if (el.type === 'file') {
+            console.log(`[AutoFill] Skipping file upload: ${el.name || el.id}`);
+            return;
+        }
+
+        // Skip submit and reset inputs (action buttons, not data entry)
+        if (el.type === 'submit' || el.type === 'reset' || el.type === 'image') {
+            console.log(`[AutoFill] Skipping ${el.type} button: ${el.name || el.value}`);
+            return;
+        }
+
+        // Handle radiogroups: Skip the container, we'll capture individual buttons
+        if (el.getAttribute('role') === 'radiogroup') {
+            console.log(`[AutoFill] Skipping radiogroup container (will capture individual buttons): ${el.getAttribute('aria-label') || el.id}`);
+            return;
+        }
+
+        // Skip action/navigation buttons (not data entry)
+        if (el.tagName.toLowerCase() === 'button' && isActionButton(el)) {
+            console.log(`[AutoFill] Skipping action button: ${el.textContent.trim()}`);
+            return;
+        }
+
+        // Keep choice buttons (like Title: Mr/Mrs/Ms)
+        if (el.tagName.toLowerCase() === 'button' && isChoiceButton(el)) {
+            console.log(`[AutoFill] Found choice button: ${el.textContent.trim()}`);
+        }
+
         // Skip if already has a value (pre-filled)
         if (el.value && el.value.trim() && el.type !== 'button') {
             console.log(`[AutoFill] Skipping pre-filled field: ${el.name || el.id}`);
             return;
         }
-        
+
         const elementInfo = {
             tag: el.tagName.toLowerCase(),
             type: el.type || el.getAttribute('role') || '',
@@ -208,10 +314,10 @@ function extractFormElements() {
             selector: generateSelector(el),
             context: getMinimalContext(el)
         };
-        
+
         elements.push(elementInfo);
     });
-    
+
     console.log(`[AutoFill Agent] Extracted ${elements.length} form elements`);
     return elements;
 }
@@ -225,35 +331,35 @@ function findLabelForElement(element) {
         const label = document.querySelector(`label[for="${element.id}"]`);
         if (label) return cleanText(label.textContent);
     }
-    
+
     // Strategy 2: Wrapped in label
     const parentLabel = element.closest('label');
     if (parentLabel) return cleanText(parentLabel.textContent);
-    
+
     // Strategy 3: aria-label
     if (element.getAttribute('aria-label')) {
         return cleanText(element.getAttribute('aria-label'));
     }
-    
+
     // Strategy 4: aria-labelledby
     const labelledBy = element.getAttribute('aria-labelledby');
     if (labelledBy) {
         const labelEl = document.getElementById(labelledBy);
         if (labelEl) return cleanText(labelEl.textContent);
     }
-    
+
     // Strategy 5: Placeholder as fallback
     if (element.placeholder) {
         return cleanText(element.placeholder);
     }
-    
+
     // Strategy 6: Find nearest text in wrapper
     const wrapper = element.closest('[class*="field"], [class*="form"], [class*="input"]');
     if (wrapper) {
         // Get all text nodes before the input
         const allText = wrapper.textContent;
         const lines = allText.trim().split('\n').map(l => l.trim()).filter(l => l);
-        
+
         // Find a line that looks like a label (short, not too generic)
         for (const line of lines) {
             if (line.length > 2 && line.length < 50 && !line.match(/^\d+$/)) {
@@ -261,7 +367,7 @@ function findLabelForElement(element) {
             }
         }
     }
-    
+
     return 'Unknown Field';
 }
 
@@ -271,17 +377,17 @@ function findLabelForElement(element) {
 function generateSelector(element) {
     // Priority 1: ID (most reliable)
     if (element.id) return `#${element.id}`;
-    
+
     // Priority 2: Name attribute
     if (element.name) return `[name="${element.name}"]`;
-    
+
     // Priority 3: Unique data attributes
     const dataAttrs = ['data-test', 'data-qa', 'data-testid', 'data-id'];
     for (const attr of dataAttrs) {
         const val = element.getAttribute(attr);
         if (val) return `[${attr}="${val}"]`;
     }
-    
+
     // Priority 4: nth-of-type with tag
     const parent = element.parentElement;
     if (parent) {
@@ -289,7 +395,7 @@ function generateSelector(element) {
         const index = siblings.indexOf(element) + 1;
         return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
     }
-    
+
     return element.tagName.toLowerCase();
 }
 
@@ -299,10 +405,10 @@ function generateSelector(element) {
 function getMinimalContext(element) {
     // Get immediate wrapper for LLM context
     const wrapper = element.closest('[class*="field"], [class*="form-group"], [class*="input"]') || element.parentElement;
-    
+
     if (wrapper) {
         const clone = wrapper.cloneNode(true);
-        
+
         // Keep structure but simplify
         clone.querySelectorAll('*').forEach(el => {
             const keep = ['id', 'name', 'class', 'type', 'role', 'for'];
@@ -310,11 +416,11 @@ function getMinimalContext(element) {
                 if (!keep.includes(attr.name)) el.removeAttribute(attr.name);
             });
         });
-        
+
         // Limit to 500 chars
         return clone.outerHTML.substring(0, 500);
     }
-    
+
     return '';
 }
 
@@ -359,18 +465,18 @@ function findElementFallback(action) {
 
     // NEW: Comprehensive search by label + type + name + placeholder
     const allInputs = document.querySelectorAll('input, select, textarea, button');
-    
+
     for (const input of allInputs) {
         // Skip hidden elements
         if (input.type === 'hidden' || input.offsetParent === null) continue;
-        
+
         // Match by label (using our smart findLabelForElement function)
         const inputLabel = findLabelForElement(input).toLowerCase();
         const labelMatches = inputLabel.includes(label) || label.includes(inputLabel);
-        
+
         if (labelMatches) {
             // Also check type matches the interaction
-            if (action.interaction === 'fill_text' && 
+            if (action.interaction === 'fill_text' &&
                 ['text', 'email', 'tel', 'url', 'password', 'number', 'date', ''].includes(input.type || '')) {
                 return input;
             }
@@ -387,17 +493,17 @@ function findElementFallback(action) {
                 return input;
             }
         }
-        
+
         // Match by placeholder
-        if (input.placeholder && 
+        if (input.placeholder &&
             (input.placeholder.toLowerCase().includes(label) || label.includes(input.placeholder.toLowerCase()))) {
             return input;
         }
-        
+
         // Match by name attribute (fuzzy)
-        if (input.name && 
-            (input.name.toLowerCase().includes(label.replace(/\s+/g, '')) || 
-             label.replace(/\s+/g, '').includes(input.name.toLowerCase()))) {
+        if (input.name &&
+            (input.name.toLowerCase().includes(label.replace(/\s+/g, '')) ||
+                label.replace(/\s+/g, '').includes(input.name.toLowerCase()))) {
             return input;
         }
     }
@@ -465,6 +571,50 @@ async function executeActions(actions) {
                 case 'click':
                     console.log(`[AutoFill] Attempting to click: ${action.label}`, action.selector, element);
 
+                    // Special handling for radio buttons - ensure we click the right value
+                    if (element.type === 'radio') {
+                        const radioName = element.name;
+                        // Try to find the specific radio button by value
+                        const radios = document.querySelectorAll(`input[type="radio"][name="${radioName}"]`);
+                        let targetRadio = element; // default to found element
+
+                        for (const radio of radios) {
+                            // Match by value or associated label
+                            if (radio.value.toLowerCase() === action.value.toLowerCase()) {
+                                targetRadio = radio;
+                                break;
+                            }
+                            const label = document.querySelector(`label[for="${radio.id}"]`);
+                            if (label && label.textContent.toLowerCase().trim() === action.value.toLowerCase()) {
+                                targetRadio = radio;
+                                break;
+                            }
+                        }
+                        element = targetRadio;
+                        console.log(`[AutoFill] Found specific radio button for value: ${action.value}`);
+                    }
+
+                    // Special handling for choice buttons - find by text content
+                    if (element.tagName === 'BUTTON' && isChoiceButton(element)) {
+                        const buttonText = element.textContent.trim().toLowerCase();
+                        const targetValue = action.value.toLowerCase();
+
+                        // If text doesn't match, try to find the right button in the group
+                        if (buttonText !== targetValue) {
+                            const parent = element.closest('[role="radiogroup"], [role="list"], [role="group"]');
+                            if (parent) {
+                                const buttons = parent.querySelectorAll('button');
+                                for (const btn of buttons) {
+                                    if (btn.textContent.trim().toLowerCase() === targetValue) {
+                                        element = btn;
+                                        console.log(`[AutoFill] Found specific choice button: ${btn.textContent.trim()}`);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Try multiple click methods for better compatibility
                     try {
                         // Method 1: Direct click
@@ -482,7 +632,7 @@ async function executeActions(actions) {
                         element.focus();
                         element.dispatchEvent(new Event('focus', { bubbles: true }));
 
-                        console.log(`✓ Clicked: ${action.label}`);
+                        console.log(`✓ Clicked: ${action.label} = ${action.value}`);
                     } catch (clickError) {
                         console.error(`[AutoFill] Click failed for ${action.label}:`, clickError);
                     }
