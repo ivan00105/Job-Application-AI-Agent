@@ -1,11 +1,14 @@
 // Content script for LLM-based job application autofill
-// Simplified approach: Extract HTML → Send to LLM → Execute actions
+// A11y-enhanced approach: Extract semantic elements → Send to LLM → Execute via registry
 
-console.log('[AutoFill Agent] Content script loaded (LLM-based v2.0)');
+console.log('[AutoFill Agent] Content script loaded (A11y-enhanced v3.0)');
 
 // State management
 let isAutoFillActive = false;
 let autoFillButton = null;
+
+// Global registry to map IDs to actual DOM elements
+const elementRegistry = new Map();
 
 /**
  * Inject floating auto-fill button
@@ -94,24 +97,26 @@ async function handleAutoFillClick() {
     updateButtonState('Extracting', null, true);
 
     try {
-        // 1. Extract form elements (NEW: structured extraction)
-        const elements = extractFormElements();
-        if (!elements || elements.length === 0) {
+        // 1. Extract elements with A11y enhancement
+        const domElements = extractA11yEnhancedElements();
+        if (!domElements || domElements.length === 0) {
             alert('❌ No form fields found on this page.\n\nMake sure you\'re on a job application form.');
             isAutoFillActive = false;
             updateButtonState('AI Auto-Fill', null, false);
             return;
         }
 
-        console.log(`[AutoFill Agent] Extracted ${elements.length} form elements`);
+        // 2. Build registry (keeps DOM references)
+        const serializedElements = buildElementRegistry(domElements);
+        console.log(`[AutoFill Agent] Built registry with ${serializedElements.length} A11y-enhanced elements`);
 
-        // 2. Send to backend
+        // 3. Send to backend
         updateButtonState('Analyzing', null, true);
         const companyName = extractCompanyName();
 
         const response = await chrome.runtime.sendMessage({
             action: 'analyzeForm',
-            elements: elements,  // Send structured elements instead of HTML
+            elements: serializedElements,  // Send serialized data
             url: window.location.href,
             companyName: companyName
         });
@@ -241,23 +246,96 @@ function isChoiceButton(button) {
 }
 
 /**
- * Extract structured form elements with labels and selectors
- * NEW: Smart extraction instead of sending bloated HTML
+ * Get implicit ARIA role for an element
  */
-function extractFormElements() {
+function getImplicitRole(element) {
+    const tag = element.tagName.toLowerCase();
+    const type = element.type?.toLowerCase();
+
+    if (tag === 'input') {
+        if (type === 'text' || type === 'email' || type === 'tel' || type === 'url' || type === 'password' || !type) return 'textbox';
+        if (type === 'number') return 'spinbutton';
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'button') return 'button';
+        if (type === 'search') return 'searchbox';
+        if (type === 'range') return 'slider';
+        if (type === 'date' || type === 'datetime-local' || type === 'time') return 'textbox';
+    }
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'button') return 'button';
+
+    return '';
+}
+
+/**
+ * Get accessible name for an element (following ARIA spec)
+ */
+function getAccessibleName(element) {
+    // Check aria-label first
+    if (element.getAttribute('aria-label')) {
+        return cleanText(element.getAttribute('aria-label'));
+    }
+
+    // Check aria-labelledby
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+        const labelEl = document.getElementById(labelledBy);
+        if (labelEl) return cleanText(labelEl.textContent);
+    }
+
+    // Check for <label> association
+    if (element.id) {
+        const label = document.querySelector(`label[for="${element.id}"]`);
+        if (label) return cleanText(label.textContent);
+    }
+
+    // Check if wrapped in label
+    const parentLabel = element.closest('label');
+    if (parentLabel) return cleanText(parentLabel.textContent);
+
+    // For buttons, use text content
+    if (element.tagName.toLowerCase() === 'button') {
+        return cleanText(element.textContent);
+    }
+
+    // Fallback to placeholder or title
+    return cleanText(element.placeholder || element.title || '');
+}
+
+/**
+ * Get accessible description for an element
+ */
+function getAccessibleDescription(element) {
+    // Check aria-describedby
+    const describedBy = element.getAttribute('aria-describedby');
+    if (describedBy) {
+        const descEl = document.getElementById(describedBy);
+        if (descEl) return cleanText(descEl.textContent);
+    }
+
+    // Check title attribute
+    if (element.title) {
+        return cleanText(element.title);
+    }
+
+    return '';
+}
+
+/**
+ * Extract A11y-enhanced form elements
+ * Uses accessibility properties for better semantic understanding
+ */
+function extractA11yEnhancedElements() {
     const elements = [];
 
-    // Find all interactive elements (excluding hidden)
+    // Find all interactive elements
     const selectors = [
         'input:not([type="hidden"])',
         'textarea',
         'select',
-        'button[type="button"]',
-        'button:not([type="submit"])',
-        '[role="textbox"]',
-        '[role="combobox"]',
-        '[role="radiogroup"]',
-        '[contenteditable="true"]'
+        'button'
     ];
 
     document.querySelectorAll(selectors.join(',')).forEach(el => {
@@ -267,63 +345,85 @@ function extractFormElements() {
         // Skip if hidden
         if (el.offsetParent === null && el.type !== 'file') return;
 
-        // Skip file upload inputs (can't programmatically set for security reasons)
-        if (el.type === 'file') {
-            console.log(`[AutoFill] Skipping file upload: ${el.name || el.id}`);
-            return;
-        }
+        // Skip file upload inputs
+        if (el.type === 'file') return;
 
-        // Skip submit and reset inputs (action buttons, not data entry)
-        if (el.type === 'submit' || el.type === 'reset' || el.type === 'image') {
-            console.log(`[AutoFill] Skipping ${el.type} button: ${el.name || el.value}`);
-            return;
-        }
+        // Skip submit and reset inputs
+        if (el.type === 'submit' || el.type === 'reset' || el.type === 'image') return;
 
-        // Handle radiogroups: Skip the container, we'll capture individual buttons
-        if (el.getAttribute('role') === 'radiogroup') {
-            console.log(`[AutoFill] Skipping radiogroup container (will capture individual buttons): ${el.getAttribute('aria-label') || el.id}`);
-            return;
-        }
-
-        // Skip action/navigation buttons (not data entry)
-        if (el.tagName.toLowerCase() === 'button' && isActionButton(el)) {
-            console.log(`[AutoFill] Skipping action button: ${el.textContent.trim()}`);
-            return;
-        }
-
-        // Keep choice buttons (like Title: Mr/Mrs/Ms)
-        if (el.tagName.toLowerCase() === 'button' && isChoiceButton(el)) {
-            console.log(`[AutoFill] Found choice button: ${el.textContent.trim()}`);
-        }
+        // Skip action/navigation buttons
+        if (el.tagName.toLowerCase() === 'button' && isActionButton(el)) return;
 
         // Skip if already has a value (pre-filled)
-        if (el.value && el.value.trim() && el.type !== 'button') {
-            console.log(`[AutoFill] Skipping pre-filled field: ${el.name || el.id}`);
+        if (el.value && el.value.trim() && el.type !== 'button') return;
+
+        // Get computed accessibility properties
+        const computedRole = el.getAttribute('role') || getImplicitRole(el);
+        const computedName = getAccessibleName(el);
+        const computedDescription = getAccessibleDescription(el);
+
+        // Skip if we can't determine the name (no label)
+        if (!computedName || computedName === 'Unknown Field') {
+            console.log(`[AutoFill] Skipping element with no accessible name:`, el);
             return;
         }
 
-        const elementInfo = {
+        elements.push({
+            // DOM info
             tag: el.tagName.toLowerCase(),
-            type: el.type || el.getAttribute('role') || '',
+            type: el.type || '',
             id: el.id || '',
             name: el.name || '',
             placeholder: el.placeholder || '',
             value: el.value || '',
             required: el.required || false,
-            label: findLabelForElement(el),
-            selector: generateSelector(el),
-            context: getMinimalContext(el)
-        };
-
-        elements.push(elementInfo);
+            // A11y info (better labels!)
+            a11yRole: computedRole,
+            a11yName: computedName,  // This is the label!
+            a11yDescription: computedDescription,
+            // Store reference
+            element: el  // Keep DOM reference for execution
+        });
     });
 
-    console.log(`[AutoFill Agent] Extracted ${elements.length} form elements`);
+    console.log(`[AutoFill Agent] Extracted ${elements.length} A11y-enhanced elements`);
     return elements;
 }
 
 /**
+ * Build element registry and return serialized data for backend
+ * Maps element IDs to actual DOM references
+ */
+function buildElementRegistry(elements) {
+    elementRegistry.clear();
+
+    elements.forEach((elementData, index) => {
+        const id = `elem_${index}`;
+
+        // Store the mapping
+        elementRegistry.set(id, {
+            domElement: elementData.element,  // Actual DOM reference
+            a11yName: elementData.a11yName,
+            a11yRole: elementData.a11yRole,
+            // For serialization to backend
+            serialized: {
+                id: id,
+                role: elementData.a11yRole,
+                label: elementData.a11yName,
+                type: elementData.type,
+                required: elementData.required,
+                currentValue: elementData.value,
+                description: elementData.a11yDescription
+            }
+        });
+    });
+
+    return Array.from(elementRegistry.values()).map(v => v.serialized);
+}
+
+/**
  * Find label for an element using multiple strategies
+ * DEPRECATED: Use getAccessibleName() instead for A11y approach
  */
 function findLabelForElement(element) {
     // Strategy 1: <label for="id">
@@ -512,9 +612,198 @@ function findElementFallback(action) {
 }
 
 /**
- * Execute actions returned by LLM
+ * Execute actions returned by LLM (using element registry)
  */
 async function executeActions(actions) {
+    for (const action of actions) {
+        // Show popup for low confidence actions
+        if (action.confidence === 'low') {
+            showUserPrompt(action);
+            continue;
+        }
+
+        try {
+            // Use element ID to get DOM reference from registry
+            const elementData = elementRegistry.get(action.elementId);
+
+            if (!elementData) {
+                console.error(`[AutoFill] Element not found in registry: ${action.elementId}`);
+                showUserPrompt(action);
+                continue;
+            }
+
+            const element = elementData.domElement;
+            const role = elementData.a11yRole;
+
+            console.log(`[AutoFill] Executing action: ${action.label} (role: ${role}, value: ${action.value})`);
+
+            // Execute based on role (more reliable than type checking)
+            if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
+                // Text input, textarea, number, date, etc.
+                element.value = action.value;
+                element.dispatchEvent(new Event('input', { bubbles: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                element.dispatchEvent(new Event('blur', { bubbles: true }));
+                console.log(`✓ Filled: ${action.label} = ${action.value}`);
+            }
+            else if (role === 'combobox' || role === 'listbox') {
+                // Select dropdown
+                await selectOption(element, action.value, action.label);
+            }
+            else if (role === 'checkbox' || role === 'switch') {
+                // Checkbox
+                const shouldCheck = action.value === 'true' ||
+                    action.value.toLowerCase() === 'yes' ||
+                    action.value === '1' ||
+                    action.value === true;
+                element.checked = shouldCheck;
+                element.dispatchEvent(new Event('change', { bubbles: true }));
+                element.dispatchEvent(new Event('click', { bubbles: true }));
+                console.log(`✓ ${shouldCheck ? 'Checked' : 'Unchecked'}: ${action.label}`);
+            }
+            else if (role === 'button' || role === 'radio') {
+                // Button or radio
+                clickElement(element, action.value, action.label);
+            }
+            else {
+                console.warn(`[AutoFill] Unhandled role: ${role} for ${action.label}`);
+            }
+
+            // Small delay between actions
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+        } catch (error) {
+            console.error(`[AutoFill] Error executing action for ${action.label}:`, error);
+            showUserPrompt(action);
+        }
+    }
+}
+
+/**
+ * Select option in dropdown (helper function)
+ */
+async function selectOption(element, value, label) {
+    if (element.tagName.toLowerCase() === 'select') {
+        // Improved dropdown selection with multiple matching strategies
+        const options = Array.from(element.options);
+        let match = null;
+
+        // 1. Exact match
+        match = options.find(opt =>
+            opt.text.toLowerCase() === value.toLowerCase()
+        );
+
+        // 2. Value contains option
+        if (!match) {
+            match = options.find(opt =>
+                value.toLowerCase().includes(opt.text.toLowerCase())
+            );
+        }
+
+        // 3. Option contains value
+        if (!match) {
+            match = options.find(opt =>
+                opt.text.toLowerCase().includes(value.toLowerCase())
+            );
+        }
+
+        // 4. Word-level matching
+        if (!match) {
+            const valueWords = value.toLowerCase().split(/\s+/);
+            match = options.find(opt => {
+                const optWords = opt.text.toLowerCase().split(/\s+/);
+                return valueWords.some(vw => optWords.some(ow =>
+                    ow.includes(vw) || vw.includes(ow)
+                ));
+            });
+        }
+
+        if (match) {
+            element.value = match.value;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('blur', { bubbles: true }));
+            console.log(`✓ Selected: ${label} = ${match.text}`);
+        } else {
+            console.warn(`[AutoFill] No matching option for: ${label} = "${value}"`);
+            console.warn(`Available: ${options.map(o => o.text).join(', ')}`);
+        }
+    } else if (element.tagName.toLowerCase() === 'input' && element.hasAttribute('list')) {
+        // Input with datalist
+        element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('blur', { bubbles: true }));
+        console.log(`✓ Filled datalist: ${label} = ${value}`);
+    } else {
+        // Custom dropdown fallback
+        element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log(`✓ Filled: ${label} = ${value}`);
+    }
+}
+
+/**
+ * Click element (helper function)
+ */
+function clickElement(element, value, label) {
+    // For radio buttons, try to find the specific option by value
+    if (element.type === 'radio') {
+        const radioName = element.name;
+        const radios = document.querySelectorAll(`input[type="radio"][name="${radioName}"]`);
+        let targetRadio = element;
+
+        for (const radio of radios) {
+            if (radio.value.toLowerCase() === value.toLowerCase()) {
+                targetRadio = radio;
+                break;
+            }
+            const radioLabel = document.querySelector(`label[for="${radio.id}"]`);
+            if (radioLabel && radioLabel.textContent.toLowerCase().trim() === value.toLowerCase()) {
+                targetRadio = radio;
+                break;
+            }
+        }
+        element = targetRadio;
+    }
+
+    // For choice buttons, find the specific button by text
+    if (element.tagName.toLowerCase() === 'button' && isChoiceButton(element)) {
+        const buttonText = element.textContent.trim().toLowerCase();
+        const targetValue = value.toLowerCase();
+
+        if (buttonText !== targetValue) {
+            const parent = element.closest('[role="radiogroup"], [role="list"], [role="group"]');
+            if (parent) {
+                const buttons = parent.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.trim().toLowerCase() === targetValue) {
+                        element = btn;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Execute click with multiple methods
+    element.click();
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.focus();
+    element.dispatchEvent(new Event('focus', { bubbles: true }));
+
+    console.log(`✓ Clicked: ${label} = ${value}`);
+}
+
+/**
+ * DEPRECATED - OLD Execute actions function
+ * Kept for reference only - use registry-based version above
+ */
+async function executeActionsOld(actions) {
     for (let i = 0; i < actions.length; i++) {
         const action = actions[i];
 
@@ -732,31 +1021,17 @@ async function executeActions(actions) {
 
 /**
  * Show popup for user input (positioned near the field)
+ * NEW: Uses element registry instead of selectors
  */
 function showUserPrompt(action) {
-    // Try to find the element to position near
+    // Get element from registry
+    const elementData = elementRegistry.get(action.elementId);
     let targetElement = null;
-    try {
-        targetElement = document.querySelector(action.selector);
 
-        // If it's a wrapper component, find the actual input inside
-        if (targetElement) {
-            const tagName = targetElement.tagName.toLowerCase();
-            if (!['input', 'select', 'textarea', 'button'].includes(tagName)) {
-                const actualInput = targetElement.querySelector('input, select, textarea, button');
-                if (actualInput) {
-                    targetElement = actualInput;
-                }
-            }
-        }
-
-        // Try fallback if still not found
-        if (!targetElement) {
-            targetElement = findElementFallback(action);
-        }
-    } catch (e) {
-        console.warn('[AutoFill Agent] Invalid selector for popup positioning, trying fallback');
-        targetElement = findElementFallback(action);
+    if (elementData) {
+        targetElement = elementData.domElement;
+    } else {
+        console.warn(`[AutoFill] Element not found in registry for popup: ${action.elementId}`);
     }
 
     // Create popup container
@@ -892,14 +1167,10 @@ function showUserPrompt(action) {
         const answer = input ? input.value : '';
         const valueToUse = answer || action.value || '';
 
-        // Always try to execute the action
-        console.log(`[AutoFill] Executing:`, {
-            selector: action.selector,
-            value: valueToUse,
-            interaction: action.interaction
-        });
-
-        tryFillField(action.selector, valueToUse, action.interaction);
+        // Execute using element from registry
+        if (targetElement) {
+            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
+        }
         cleanup();
     });
 
@@ -914,8 +1185,10 @@ function showUserPrompt(action) {
             saveAnswer(action.label, valueToUse, 'global');
         }
 
-        // Execute action
-        tryFillField(action.selector, valueToUse, action.interaction);
+        // Execute using element from registry
+        if (targetElement) {
+            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
+        }
         cleanup();
     });
 
@@ -930,8 +1203,10 @@ function showUserPrompt(action) {
             saveAnswer(action.label, valueToUse, 'company');
         }
 
-        // Execute action
-        tryFillField(action.selector, valueToUse, action.interaction);
+        // Execute using element from registry
+        if (targetElement) {
+            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
+        }
         cleanup();
     });
 
@@ -959,7 +1234,43 @@ function showUserPrompt(action) {
 }
 
 /**
- * Try to fill field with value (improved for all field types)
+ * Execute action manually from user prompt popup (using element directly)
+ */
+function executeManualAction(element, value, interaction, role) {
+    try {
+        console.log(`[AutoFill] Executing manual action: ${interaction} with value: ${value}`);
+
+        if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
+            element.value = value;
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.dispatchEvent(new Event('blur', { bubbles: true }));
+            console.log(`✓ Filled: ${value}`);
+        }
+        else if (role === 'combobox' || role === 'listbox') {
+            selectOption(element, value, '(manual)');
+        }
+        else if (role === 'checkbox' || role === 'switch') {
+            const shouldCheck = value === 'true' || value.toLowerCase() === 'yes' || value === '1' || value === true;
+            element.checked = shouldCheck;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.dispatchEvent(new Event('click', { bubbles: true }));
+            console.log(`✓ ${shouldCheck ? 'Checked' : 'Unchecked'}`);
+        }
+        else if (role === 'button' || role === 'radio') {
+            clickElement(element, value, '(manual)');
+        }
+        else {
+            console.warn(`[AutoFill] Unknown role for manual action: ${role}`);
+        }
+    } catch (error) {
+        console.error('[AutoFill] Error in manual action:', error);
+    }
+}
+
+/**
+ * DEPRECATED: Try to fill field with value (improved for all field types)
+ * Use executeManualAction instead for registry-based approach
  */
 function tryFillField(selector, value, interaction) {
     try {

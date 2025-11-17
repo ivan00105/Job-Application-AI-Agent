@@ -5,10 +5,40 @@ from pydantic import BaseModel
 from typing import List, Optional, Literal
 
 
-# ===== NEW LLM-BASED MODELS =====
+# ===== A11Y-ENHANCED MODELS =====
+
+class A11yFormElement(BaseModel):
+    """A11y-enhanced form element"""
+    id: str  # elem_0, elem_1, etc.
+    role: str  # textbox, button, checkbox, combobox, radio, etc.
+    label: str  # Accessible name (stable!)
+    type: str  # input type if applicable
+    required: bool
+    currentValue: str
+    description: Optional[str] = ""
+
+
+class AnalyzeFormRequest(BaseModel):
+    """Request with A11y-enhanced elements"""
+    elements: List[A11yFormElement]
+    url: str
+    company_name: Optional[str] = None
+
+
+class FormAction(BaseModel):
+    """Action to perform on a form element"""
+    elementId: str  # Use element ID instead of selector
+    label: str
+    interaction: Literal["fill_text", "click", "select_option", "check"]
+    value: str
+    confidence: Literal["high", "medium", "low"]
+    reasoning: str
+
+
+# ===== OLD DOM-BASED MODELS (DEPRECATED) =====
 
 class FormElement(BaseModel):
-    """Extracted form element with context"""
+    """DEPRECATED: Extracted form element with context"""
     tag: str
     type: str
     id: str
@@ -19,23 +49,6 @@ class FormElement(BaseModel):
     label: str
     selector: str
     context: str
-
-
-class AnalyzeFormRequest(BaseModel):
-    """Request to analyze form with structured elements"""
-    elements: List[FormElement]  # NEW: structured list instead of HTML
-    url: str
-    company_name: Optional[str] = None
-
-
-class FormAction(BaseModel):
-    """Action to perform on a form element"""
-    label: str
-    selector: str  # CSS selector
-    interaction: Literal["fill_text", "click", "select_option", "check"]
-    value: str
-    confidence: Literal["high", "medium", "low"]
-    reasoning: str
 
 
 class AnalyzeFormResponse(BaseModel):

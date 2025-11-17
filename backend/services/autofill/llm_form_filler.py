@@ -172,18 +172,20 @@ async def analyze_and_fill_form(
 
 
 def format_elements_list(elements: List[Dict]) -> str:
-    """Format element list compactly for LLM."""
+    """Format A11y elements for LLM."""
     lines = []
-    for i, el in enumerate(elements):
-        lines.append(f"{i+1}. {el['label']} ({el['type']})")
-        lines.append(f"   - Selector: {el['selector']}")
-        lines.append(f"   - Current value: {el.get('value', '')}")
-        if el.get('placeholder'):
-            lines.append(f"   - Placeholder: {el['placeholder']}")
+    for el in elements:
+        lines.append(f"ID: {el['id']}")
+        lines.append(f"  Role: {el['role']}")
+        lines.append(f"  Label: {el['label']}")
+        if el.get('type'):
+            lines.append(f"  Type: {el['type']}")
         if el.get('required'):
-            lines.append(f"   - Required: yes")
-        if el.get('context'):
-            lines.append(f"   - HTML context: {el['context'][:200]}")
+            lines.append(f"  Required: yes")
+        if el.get('currentValue'):
+            lines.append(f"  Current: {el['currentValue']}")
+        if el.get('description'):
+            lines.append(f"  Description: {el['description']}")
         lines.append("")
     
     return "\n".join(lines)
@@ -259,8 +261,8 @@ def parse_llm_response(response: str) -> List[Dict[str, Any]]:
         if not isinstance(action, dict):
             continue
         
-        # Required fields
-        if 'label' not in action or 'selector' not in action or 'interaction' not in action:
+        # Required fields (NEW: elementId instead of selector)
+        if 'label' not in action or 'elementId' not in action or 'interaction' not in action:
             print(f"[LLM Form Filler] Skipping action missing required fields: {action}")
             continue
         
@@ -282,7 +284,7 @@ def parse_llm_response(response: str) -> List[Dict[str, Any]]:
         
         cleaned_actions.append({
             'label': action.get('label', ''),
-            'selector': action.get('selector', ''),
+            'elementId': action.get('elementId', ''),  # NEW: Use elementId
             'interaction': interaction,
             'value': value,
             'confidence': confidence,
