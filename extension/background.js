@@ -5,7 +5,8 @@
 const CONFIG = {
     API_BASE_URL: 'http://localhost:8000',
     API_ENDPOINTS: {
-        ANALYZE_FORM: '/api/autofill/analyze-form',  // NEW LLM-based endpoint
+        ANALYZE_FORM: '/api/autofill/analyze-form',  // Pass 1: Initial analysis
+        ANALYZE_DROPDOWNS: '/api/autofill/analyze-dropdowns',  // Pass 2: Dropdown options
         ANALYZE_FIELDS: '/api/autofill/analyze-fields',  // OLD (deprecated)
         SAVE_ANSWER: '/api/autofill/save-answer',
         GET_MEMORY: '/api/autofill/memory'
@@ -63,11 +64,22 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
 }
 
 /**
- * Analyze form elements (NEW structured extraction approach)
+ * Analyze form elements (Pass 1: Initial analysis)
  */
 async function analyzeForm(elements, url, companyName) {
     return await apiRequest(CONFIG.API_ENDPOINTS.ANALYZE_FORM, 'POST', {
         elements,  // Send structured element list
+        url,
+        company_name: companyName
+    });
+}
+
+/**
+ * Analyze dropdown options (Pass 2: After extracting custom dropdown options)
+ */
+async function analyzeDropdowns(dropdownOptions, url, companyName) {
+    return await apiRequest(CONFIG.API_ENDPOINTS.ANALYZE_DROPDOWNS, 'POST', {
+        dropdownOptions,  // Array of {elementId, label, options: [{text, value}]}
         url,
         company_name: companyName
     });
@@ -145,8 +157,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.action === 'analyzeForm') {
-        // NEW structured extraction approach
-        console.log('[Background] Analyzing form elements:', {
+        // Pass 1: Initial form analysis
+        console.log('[Background] Analyzing form elements (Pass 1):', {
             url: message.url,
             elementCount: message.elements?.length,
             companyName: message.companyName
@@ -154,11 +166,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         analyzeForm(message.elements, message.url, message.companyName)
             .then(result => {
-                console.log('[Background] Analysis success:', result);
+                console.log('[Background] Pass 1 analysis success:', result);
                 sendResponse({ success: true, actions: result.actions });
             })
             .catch(error => {
-                console.error('[Background] Analysis error:', error);
+                console.error('[Background] Pass 1 analysis error:', error);
+                sendResponse({ success: false, error: error.message });
+            });
+        return true;
+    }
+
+    if (message.action === 'analyzeDropdowns') {
+        // Pass 2: Analyze dropdown options
+        console.log('[Background] Analyzing dropdown options (Pass 2):', {
+            url: message.url,
+            dropdownCount: message.dropdownOptions?.length,
+            companyName: message.companyName
+        });
+
+        analyzeDropdowns(message.dropdownOptions, message.url, message.companyName)
+            .then(result => {
+                console.log('[Background] Pass 2 analysis success:', result);
+                sendResponse({ success: true, actions: result.actions });
+            })
+            .catch(error => {
+                console.error('[Background] Pass 2 analysis error:', error);
                 sendResponse({ success: false, error: error.message });
             });
         return true;

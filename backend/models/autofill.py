@@ -29,7 +29,7 @@ class FormAction(BaseModel):
     """Action to perform on a form element"""
     elementId: str  # Use element ID instead of selector
     label: str
-    interaction: Literal["fill_text", "click", "select_option", "check"]
+    interaction: Literal["fill_text", "click", "select_option", "check", "need_options"]
     value: str
     confidence: Literal["high", "medium", "low"]
     reasoning: str

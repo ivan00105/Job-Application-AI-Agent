@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 import json
 import re
 from pathlib import Path
+from .fuzzy_matcher import fuzzy_match_field_label
 
 
 def load_prompt_template() -> str:
@@ -130,45 +131,96 @@ async def analyze_and_fill_form(
         "reasoning": "Found in CV"
     }]
     """
+    # Combine memory (company memory takes priority)
+    all_memory = company_memory + global_memory
+    
+    # PRE-FILL STEP: Use fuzzy matching to auto-fill fields with saved answers (80%+ similarity)
+    prefilled_actions = []
+    elements_needing_llm = []
+    
+    for element in elements:
+        field_label = element.get('label', '')
+        
+        # Try fuzzy match with memory (80% similarity threshold)
+        matched_memory = fuzzy_match_field_label(field_label, all_memory, threshold=0.8)
+        
+        if matched_memory:
+            # Auto-fill with high confidence (memory match)
+            answer = matched_memory.get('answer_text', '')
+            # Skip if answer is empty, "None", or other placeholder values
+            if answer and answer.lower() not in ['none', 'n/a', 'null', 'not applicable', '']:
+                # Determine interaction type based on role
+                role = element.get('role', '')
+                interaction = 'fill_text'  # default
+                if role in ['combobox', 'listbox']:
+                    interaction = 'select_option'
+                elif role in ['checkbox', 'switch']:
+                    interaction = 'check'
+                elif role in ['button', 'radio', 'option']:
+                    interaction = 'click'
+                
+                prefilled_actions.append({
+                    'label': field_label,
+                    'elementId': element.get('id', ''),
+                    'interaction': interaction,
+                    'value': answer,
+                    'confidence': 'high',
+                    'reasoning': f"Found in memory (fuzzy match with '{matched_memory['question_text']}')"
+                })
+                print(f"[Pre-fill] Auto-filled '{field_label}' with saved answer: '{answer}'")
+                continue  # Skip LLM for this field
+        
+        # No memory match - needs LLM analysis
+        elements_needing_llm.append(element)
+    
+    print(f"[LLM Form Filler] Pre-filled {len(prefilled_actions)} fields from memory")
+    print(f"[LLM Form Filler] {len(elements_needing_llm)} fields need LLM analysis")
+    
+    # If all fields were pre-filled, skip LLM call entirely!
+    if len(elements_needing_llm) == 0:
+        print(f"[LLM Form Filler] All fields pre-filled from memory. Skipping LLM call!")
+        return prefilled_actions
+    
     # Load prompt template
     prompt_template = load_prompt_template()
     
-    # Combine memory
-    all_memory = company_memory + global_memory
-    
-    # Format elements for LLM (compact list)
-    elements_summary = format_elements_list(elements)
+    # Format ONLY elements needing LLM analysis (reduces token usage)
+    elements_summary = format_elements_list(elements_needing_llm)
     
     # Build prompt with structured elements
     prompt = prompt_template.format(
         cv_data=format_cv_summary(cv_data),
         memory_data=format_memory(all_memory),
-        form_elements=elements_summary  # Compact list instead of huge HTML
+        form_elements=elements_summary  # Only unfilled elements
     )
     
     # Debug logging
-    print(f"[LLM Form Filler] Processing {len(elements)} form elements")
+    print(f"[LLM Form Filler] Sending {len(elements_needing_llm)} elements to LLM")
     print(f"[LLM Form Filler] Prompt size: {len(prompt)} characters")
     
     try:
-        # Call LLM - now we have much more room for output
+        # Call LLM - only for fields not pre-filled
         response = await llm_service.generate_text(
             prompt=prompt,
-            temperature=0.2,  # Low temperature for consistent, predictable output
+            temperature=0.1,  # Very low temperature for aggressive high confidence
             max_tokens=8000  # Large response for complete JSON with many fields
         )
         
         # Parse JSON response
-        actions = parse_llm_response(response)
+        llm_actions = parse_llm_response(response)
         
-        print(f"[LLM Form Filler] Parsed {len(actions)} actions from LLM response")
-        print(f"[LLM Form Filler] Actions: {[a['label'] for a in actions]}")
-        return actions
+        # Combine pre-filled actions with LLM actions
+        all_actions = prefilled_actions + llm_actions
+        
+        print(f"[LLM Form Filler] Parsed {len(llm_actions)} actions from LLM response")
+        print(f"[LLM Form Filler] Total actions (pre-filled + LLM): {len(all_actions)}")
+        return all_actions
     
     except Exception as e:
         print(f"[LLM Form Filler] Error: {str(e)}")
-        # Return empty list on error - user will have to fill manually
-        return []
+        # Return pre-filled actions even if LLM fails
+        print(f"[LLM Form Filler] Returning {len(prefilled_actions)} pre-filled actions despite error")
+        return prefilled_actions
 
 
 def format_elements_list(elements: List[Dict]) -> str:
@@ -271,9 +323,9 @@ def parse_llm_response(response: str) -> List[Dict[str, Any]]:
         if value.lower() in ['none', 'n/a', 'null', 'not applicable']:
             value = ''
         
-        # Validate interaction type
+        # Validate interaction type (including "need_options" for Pass 1)
         interaction = action.get('interaction', '')
-        if interaction not in ['fill_text', 'click', 'select_option', 'check']:
+        if interaction not in ['fill_text', 'click', 'select_option', 'check', 'need_options']:
             print(f"[LLM Form Filler] Invalid interaction type: {interaction}")
             continue
         

@@ -2,8 +2,9 @@
 Autofill API endpoints for job application form filling.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import json
+from pydantic import BaseModel
 
 from models.autofill import (
     # New models
@@ -32,6 +33,26 @@ import sys
 from pathlib import Path
 
 router = APIRouter()
+
+
+# ===== MODELS FOR PASS 2 (Dropdown Analysis) =====
+
+class DropdownOption(BaseModel):
+    """A single option in a dropdown"""
+    text: str
+    value: str
+
+class DropdownOptionsData(BaseModel):
+    """Options data for a custom dropdown"""
+    elementId: str
+    label: str
+    options: List[DropdownOption]
+
+class AnalyzeDropdownsRequest(BaseModel):
+    """Request for Pass 2: Analyzing dropdown options"""
+    dropdownOptions: List[DropdownOptionsData]
+    url: str
+    company_name: Optional[str] = None
 
 
 def get_llm_service():
@@ -94,6 +115,99 @@ async def analyze_form(
     )
     
     return AnalyzeFormResponse(actions=actions)
+
+
+@router.post("/analyze-dropdowns")
+async def analyze_dropdowns(
+    request: AnalyzeDropdownsRequest,
+    current_user: dict = Depends(get_current_user),
+    db: PostgresClient = Depends(get_db)
+):
+    """
+    PASS 2: Analyze custom dropdown options and return actions for selecting them.
+    Called after Pass 1 when LLM flags dropdowns as "need_options".
+    """
+    user_id = current_user['id']
+    
+    # Get user's CV
+    cv_profile = await db.fetch_one(
+        "SELECT parsed_data FROM cv_profiles WHERE user_id = $1",
+        user_id
+    )
+    
+    if not cv_profile:
+        raise HTTPException(status_code=404, detail="CV not found. Please upload your CV first.")
+    
+    cv_data = cv_profile['parsed_data']
+    if isinstance(cv_data, str):
+        cv_data = json.loads(cv_data)
+    
+    # Get user's memory
+    company_memory = []
+    global_memory = []
+    
+    if request.company_name:
+        company_memory = await get_all_memory(db, user_id, company_name=request.company_name)
+    global_memory = await get_all_memory(db, user_id, context_type='global')
+    
+    # Build a simple prompt for dropdown selection
+    llm_service = get_llm_service()
+    
+    # Create a simplified prompt for just dropdown selection
+    dropdown_prompt = build_dropdown_selection_prompt(
+        request.dropdownOptions,
+        cv_data,
+        company_memory + global_memory
+    )
+    
+    # Call LLM with simplified prompt
+    response = await llm_service.generate_text(
+        prompt=dropdown_prompt,
+        temperature=0.1,
+        max_tokens=2000
+    )
+    
+    # Parse the response (should be JSON array of actions)
+    from services.autofill.llm_form_filler import parse_llm_response
+    actions = parse_llm_response(response)
+    
+    return AnalyzeFormResponse(actions=actions)
+
+
+def build_dropdown_selection_prompt(dropdowns: List[DropdownOptionsData], cv_data: Dict, memory: List[Dict]) -> str:
+    """Build a simplified prompt for Pass 2 dropdown selection"""
+    from services.autofill.llm_form_filler import format_cv_summary, format_memory
+    
+    prompt_parts = []
+    prompt_parts.append("You are analyzing custom dropdown options to select the best match based on user's CV and saved answers.")
+    prompt_parts.append("\nUSER CV DATA:")
+    prompt_parts.append(format_cv_summary(cv_data))
+    prompt_parts.append("\nSAVED ANSWERS:")
+    prompt_parts.append(format_memory(memory))
+    prompt_parts.append("\nDROPDOWN OPTIONS TO ANALYZE:")
+    
+    for dropdown in dropdowns:
+        prompt_parts.append(f"\nDropdown: {dropdown.label} (Element ID: {dropdown.elementId})")
+        prompt_parts.append(f"Available options:")
+        for i, opt in enumerate(dropdown.options, 1):
+            prompt_parts.append(f"  {i}. {opt.text}")
+    
+    prompt_parts.append("\nTASK: For each dropdown above, return a JSON action to click the best matching option.")
+    prompt_parts.append("\nReturn a JSON array like this:")
+    prompt_parts.append('[')
+    prompt_parts.append('  {')
+    prompt_parts.append('    "elementId": "<dropdown_elementId>_option_<index>",')
+    prompt_parts.append('    "label": "<option text>",')
+    prompt_parts.append('    "interaction": "click",')
+    prompt_parts.append('    "value": "<option text>",')
+    prompt_parts.append('    "confidence": "high",')
+    prompt_parts.append('    "reasoning": "Best match from CV/memory"')
+    prompt_parts.append('  }')
+    prompt_parts.append(']')
+    prompt_parts.append('\nIMPORTANT: Use elementId format: "<dropdown_elementId>_option_<index>" where index is 0-based.')
+    prompt_parts.append('For example, if dropdown elementId is "elem_5" and you want to select the 2nd option (index 1), use "elem_5_option_1"')
+    
+    return '\n'.join(prompt_parts)
 
 
 # ===== OLD ENDPOINT (DEPRECATED) =====

@@ -1,7 +1,7 @@
 // Content script for LLM-based job application autofill
 // A11y-enhanced approach: Extract semantic elements → Send to LLM → Execute via registry
 
-console.log('[AutoFill Agent] Content script loaded (A11y-enhanced v3.0)');
+console.log('[AutoFill Agent] Content script loaded (A11y-enhanced v4.0 - Shadow DOM + Retries)');
 
 // State management
 let isAutoFillActive = false;
@@ -9,6 +9,48 @@ let autoFillButton = null;
 
 // Global registry to map IDs to actual DOM elements
 const elementRegistry = new Map();
+
+// Global state for agent (prepared for future multi-step loop)
+// Currently only used for one-shot, but ready for loop architecture
+let agentState = {
+    loopCount: 0,
+    maxLoops: 10,
+    completedActions: new Set(),
+    startTime: null,
+    isRunning: false
+};
+
+/**
+ * Helper function to check if agent can continue (for future loop implementation)
+ * Includes all safety mechanisms to prevent infinite loops
+ */
+function canContinueAgent() {
+    if (!agentState.isRunning) {
+        return false;
+    }
+
+    if (agentState.loopCount >= agentState.maxLoops) {
+        console.warn('[AutoFill] ⚠️ Max loops reached (10). Stopping agent.');
+        return false;
+    }
+
+    if (agentState.startTime && Date.now() - agentState.startTime > 60000) {
+        console.warn('[AutoFill] ⚠️ Agent timeout (60s). Stopping agent.');
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Reset agent state
+ */
+function resetAgentState() {
+    agentState.loopCount = 0;
+    agentState.completedActions.clear();
+    agentState.startTime = null;
+    agentState.isRunning = false;
+}
 
 /**
  * Inject floating auto-fill button
@@ -85,6 +127,144 @@ function updateButtonState(text, color, loading = false) {
 }
 
 /**
+ * Close all active popups and remove highlights
+ */
+function closeAllPopups() {
+    document.querySelectorAll('[id^="autofill-popup-"]').forEach(popup => {
+        popup.remove();
+    });
+
+    // Remove any outline highlights from elements
+    elementRegistry.forEach((elementData) => {
+        if (elementData.domElement) {
+            elementData.domElement.style.outline = '';
+            elementData.domElement.style.outlineOffset = '';
+        }
+    });
+
+    console.log('[AutoFill] Closed all popups and removed highlights');
+}
+
+/**
+ * Open a single custom dropdown and extract its options
+ * Handles auto-close by opening one at a time
+ * Returns array of option objects: [{text, value, element}]
+ */
+async function extractOptionsFromDropdown(dropdown) {
+    try {
+        const dropdownLabel = getAccessibleName(dropdown);
+        console.log(`[AutoFill] Opening dropdown: "${dropdownLabel}"`);
+
+        // Try to find and click the dropdown button (many custom dropdowns have a separate button)
+        const buttonId = dropdown.getAttribute('aria-controls') || dropdown.id.replace('-edit', '-button');
+        const button = document.getElementById(buttonId);
+        if (button && button.tagName.toLowerCase() === 'button') {
+            console.log(`[AutoFill] Clicking dropdown button: ${buttonId}`);
+            button.click();
+        }
+
+        // Also click and focus the input itself
+        dropdown.click();
+        dropdown.focus();
+        dropdown.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        dropdown.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        dropdown.dispatchEvent(new Event('focus', { bubbles: true }));
+        dropdown.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+
+        // Wait longer for options to appear (increased from 250ms to 500ms)
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Extract options (try multiple strategies)
+        const options = [];
+
+        // Strategy 1: aria-owns
+        const ownsId = dropdown.getAttribute('aria-owns');
+        if (ownsId) {
+            const listbox = document.getElementById(ownsId);
+            if (listbox) {
+                listbox.querySelectorAll('[role="option"]').forEach(opt => {
+                    options.push({
+                        element: opt,
+                        text: opt.textContent.trim(),
+                        value: opt.getAttribute('data-value') || opt.textContent.trim()
+                    });
+                });
+            }
+        }
+
+        // Strategy 2: aria-controls
+        if (options.length === 0) {
+            const controlsId = dropdown.getAttribute('aria-controls');
+            if (controlsId) {
+                const listbox = document.getElementById(controlsId);
+                if (listbox) {
+                    listbox.querySelectorAll('[role="option"]').forEach(opt => {
+                        if (opt.offsetParent !== null) {
+                            options.push({
+                                element: opt,
+                                text: opt.textContent.trim(),
+                                value: opt.getAttribute('data-value') || opt.textContent.trim()
+                            });
+                        }
+                    });
+                }
+            }
+        }
+
+        // Strategy 3: Next sibling or parent container
+        if (options.length === 0) {
+            const container = dropdown.nextElementSibling ||
+                dropdown.closest('[role="combobox"], .dropdown, .select, [class*="dropdown"]');
+            if (container) {
+                container.querySelectorAll('[role="option"]').forEach(opt => {
+                    if (opt.offsetParent !== null) {
+                        options.push({
+                            element: opt,
+                            text: opt.textContent.trim(),
+                            value: opt.getAttribute('data-value') || opt.textContent.trim()
+                        });
+                    }
+                });
+            }
+        }
+
+        // Strategy 4: Global search for visible options (last resort)
+        if (options.length === 0) {
+            document.querySelectorAll('[role="option"]').forEach(opt => {
+                if (opt.offsetParent !== null) {
+                    options.push({
+                        element: opt,
+                        text: opt.textContent.trim(),
+                        value: opt.getAttribute('data-value') || opt.textContent.trim()
+                    });
+                }
+            });
+        }
+
+        // Close the dropdown (multiple strategies)
+        dropdown.blur();
+        dropdown.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        dropdown.dispatchEvent(new Event('blur', { bubbles: true }));
+        document.body.click();
+
+        // Longer delay to ensure dropdown closes before next one opens
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        if (options.length > 0) {
+            console.log(`[AutoFill] ✓ Found ${options.length} options for "${dropdownLabel}": ${options.map(o => o.text).slice(0, 5).join(', ')}...`);
+        } else {
+            console.warn(`[AutoFill] ✗ No options found for "${dropdownLabel}"`);
+        }
+
+        return options;
+
+    } catch (error) {
+        console.error(`[AutoFill] Failed to extract options from dropdown:`, error);
+        return [];
+    }
+}
+
+/**
  * Handle auto-fill button click
  */
 async function handleAutoFillClick() {
@@ -93,12 +273,17 @@ async function handleAutoFillClick() {
         return;
     }
 
+    closeAllPopups(); // Close any existing popups
     isAutoFillActive = true;
     updateButtonState('Extracting', null, true);
 
     try {
-        // 1. Extract elements with A11y enhancement
+        // ==================== PASS 1: Initial Analysis ====================
+        console.log('[AutoFill] ========== PASS 1: Initial Analysis ==========');
+
+        // Extract all visible form elements
         const domElements = extractA11yEnhancedElements();
+
         if (!domElements || domElements.length === 0) {
             alert('❌ No form fields found on this page.\n\nMake sure you\'re on a job application form.');
             isAutoFillActive = false;
@@ -106,33 +291,160 @@ async function handleAutoFillClick() {
             return;
         }
 
-        // 2. Build registry (keeps DOM references)
+        // Build registry (keeps DOM references)
         const serializedElements = buildElementRegistry(domElements);
-        console.log(`[AutoFill Agent] Built registry with ${serializedElements.length} A11y-enhanced elements`);
+        console.log(`[AutoFill] Pass 1: Extracted ${serializedElements.length} visible elements`);
 
-        // 3. Send to backend
-        updateButtonState('Analyzing', null, true);
-        const companyName = extractCompanyName();
-
-        const response = await chrome.runtime.sendMessage({
-            action: 'analyzeForm',
-            elements: serializedElements,  // Send serialized data
-            url: window.location.href,
-            companyName: companyName
+        // Identify all custom dropdowns (combobox/listbox that are NOT native <select>)
+        const customDropdownElements = domElements.filter(el => {
+            const role = el.a11yRole || '';
+            const isCustomDropdown = (role === 'combobox' || role === 'listbox') &&
+                el.element.tagName.toLowerCase() !== 'select';
+            return isCustomDropdown;
         });
 
-        if (!response || !response.success) {
-            throw new Error(response?.error || 'Failed to analyze form');
+        console.log(`[AutoFill] Detected ${customDropdownElements.length} custom dropdowns (will handle in Pass 2)`);
+        if (customDropdownElements.length > 0) {
+            console.log('[AutoFill] Custom dropdowns:', customDropdownElements.map(el => ({
+                elementId: el.elementId,
+                role: el.a11yRole,
+                label: el.a11yName,
+                tag: el.element.tagName.toLowerCase(),
+                id: el.element.id
+            })));
         }
 
-        const actions = response.actions || [];
-        console.log(`[AutoFill Agent] Received ${actions.length} actions from LLM`);
+        // Send to backend for Pass 1 analysis (EXCLUDE custom dropdowns - they'll be handled in Pass 2)
+        const customDropdownIds = new Set(
+            customDropdownElements
+                .map(el => el.elementId)
+                .filter(id => typeof id === 'string')
+        );
 
-        // 3. Execute actions
+        const pass1Elements = serializedElements.filter(el => !customDropdownIds.has(el.id));
+
+        console.log(`[AutoFill] Pass 1: Analyzing ${pass1Elements.length} non-dropdown fields`);
+        console.log(`[AutoFill] Pass 1: Deferring ${customDropdownIds.size} custom dropdowns to Pass 2`);
+
+        updateButtonState('Analyzing (1/2)', null, true);
+        const companyName = extractCompanyName();
+
+        const pass1Response = await chrome.runtime.sendMessage({
+            action: 'analyzeForm',
+            elements: pass1Elements,  // Only non-dropdown fields
+            url: window.location.href,
+            companyName: companyName,
+            pass: 1
+        });
+
+        if (!pass1Response || !pass1Response.success) {
+            throw new Error(pass1Response?.error || 'Failed to analyze form (Pass 1)');
+        }
+
+        let pass1Actions = pass1Response.actions || [];
+        console.log(`[AutoFill] Pass 1: Received ${pass1Actions.length} actions from LLM`);
+
+        // ==================== PASS 2: Resolve Custom Dropdowns ====================
+        let pass2Actions = [];
+        if (customDropdownElements.length > 0) {
+            console.log(`[AutoFill] ========== PASS 2: Resolving ${customDropdownElements.length} Custom Dropdowns ==========`);
+            updateButtonState(`Opening dropdowns (${customDropdownElements.length})`, null, true);
+
+            // Extract options from EACH custom dropdown (one by one)
+            const dropdownOptionsData = [];
+            for (const dropdownEl of customDropdownElements) {
+                const elementId = dropdownEl.elementId;
+                if (!elementId) {
+                    console.warn('[AutoFill] Dropdown element missing elementId, skipping');
+                    continue;
+                }
+
+                const elementData = elementRegistry.get(elementId);
+                if (!elementData) {
+                    console.warn(`[AutoFill] Registry entry not found for dropdown ${elementId}`);
+                    continue;
+                }
+
+                const dropdown = elementData.domElement;
+                const dropdownLabel = dropdownEl.a11yName || 'Unknown';
+
+                console.log(`[AutoFill] Pass 2: Opening dropdown "${dropdownLabel}" (ID: ${elementId})`);
+
+                // Extract options with increased wait time
+                const options = await extractOptionsFromDropdown(dropdown);
+
+                if (options.length > 0) {
+                    dropdownOptionsData.push({
+                        elementId: elementId,
+                        label: dropdownLabel,
+                        options: options.map(opt => ({
+                            text: opt.text,
+                            value: opt.value
+                        }))
+                    });
+
+                    // Add options as synthetic elements to registry for later clicking
+                    let optionCounter = 0;
+                    options.forEach(opt => {
+                        const syntheticId = `${elementId}_option_${optionCounter++}`;
+                        elementRegistry.set(syntheticId, {
+                            domElement: opt.element,
+                            a11yName: opt.text,
+                            a11yRole: 'option',
+                            serialized: {
+                                id: syntheticId,
+                                role: 'option',
+                                label: opt.text,
+                                type: '',
+                                required: false,
+                                currentValue: '',
+                                description: `Option for ${dropdownLabel}`
+                            }
+                        });
+                    });
+                } else {
+                    console.warn(`[AutoFill] Pass 2: No options found for "${dropdownLabel}"`);
+                }
+            }
+
+            if (dropdownOptionsData.length > 0) {
+                console.log(`[AutoFill] Pass 2: Extracted options for ${dropdownOptionsData.length} dropdowns`);
+                updateButtonState('Analyzing (2/2)', null, true);
+
+                // Send dropdown options to LLM for Pass 2
+                const pass2Response = await chrome.runtime.sendMessage({
+                    action: 'analyzeDropdowns',
+                    dropdownOptions: dropdownOptionsData,
+                    url: window.location.href,
+                    companyName: companyName
+                });
+
+                if (pass2Response && pass2Response.success) {
+                    pass2Actions = pass2Response.actions || [];
+                    console.log(`[AutoFill] Pass 2: Received ${pass2Actions.length} actions from LLM`);
+                }
+            } else {
+                console.warn('[AutoFill] Pass 2: No options extracted from any dropdown');
+            }
+        } else {
+            console.log('[AutoFill] Pass 2: No custom dropdowns detected, skipping');
+        }
+
+        // ==================== MERGE & EXECUTE ====================
+        // Remove "need_options" actions and merge with Pass 2 actions
+        const finalActions = [
+            ...pass1Actions.filter(a => a.interaction !== 'need_options'),
+            ...pass2Actions
+        ];
+
+        console.log(`[AutoFill] ========== Executing ${finalActions.length} Total Actions ==========`);
+        console.log(`[AutoFill] (Pass 1: ${pass1Actions.filter(a => a.interaction !== 'need_options').length}, Pass 2: ${pass2Actions.length})`);
+
+        // Execute all actions at once
         updateButtonState('Filling', null, true);
-        await executeActions(actions);
+        await executeActions(finalActions);
 
-        // 4. Show completion
+        // Show completion
         isAutoFillActive = false;
         updateButtonState('✓ Done', '#10b981', false);
 
@@ -140,8 +452,8 @@ async function handleAutoFillClick() {
             updateButtonState('AI Auto-Fill', null, false);
         }, 3000);
 
-        const highConfCount = actions.filter(a => a.confidence === 'high').length;
-        const lowConfCount = actions.filter(a => a.confidence === 'low').length;
+        const highConfCount = finalActions.filter(a => a.confidence === 'high').length;
+        const lowConfCount = finalActions.filter(a => a.confidence === 'low').length;
 
         alert(`✅ Auto-Fill Complete!\n\n` +
             `✓ High confidence: ${highConfCount} fields\n` +
@@ -300,6 +612,20 @@ function getAccessibleName(element) {
         return cleanText(element.textContent);
     }
 
+    // NEW FALLBACK STRATEGY (for Lever, Workday, etc.)
+    // Strategy 6: Check for a sibling label in a common wrapper
+    const wrapper = element.closest('.application-question,.form-field,.form-group, .form-item, .field-wrapper, [class*="question"], [class*="field"]');
+    if (wrapper) {
+        const labelEl = wrapper.querySelector('.application-label,.form-label,.form-label-text, .field-label, .question-label, label, [class*="label"]:not(label)');
+        if (labelEl && labelEl !== element) {
+            const labelText = cleanText(labelEl.textContent);
+            if (labelText && labelText.length > 0 && labelText.length < 100) {
+                console.log(`[AutoFill] Found sibling label: "${labelText}"`);
+                return labelText;
+            }
+        }
+    }
+
     // Fallback to placeholder or title
     return cleanText(element.placeholder || element.title || '');
 }
@@ -324,85 +650,198 @@ function getAccessibleDescription(element) {
 }
 
 /**
- * Extract A11y-enhanced form elements
- * Uses accessibility properties for better semantic understanding
+ * Extract A11y-enhanced form elements with Shadow DOM support
+ * ENHANCED: Recursively walks DOM including Shadow DOM
  */
 function extractA11yEnhancedElements() {
     const elements = [];
+    let totalScanned = 0;
+    let skippedReasons = {
+        navigation: 0,
+        hidden: 0,
+        fileInput: 0,
+        submitReset: 0,
+        actionButton: 0,
+        preFilled: 0,
+        noLabel: 0
+    };
 
-    // Find all interactive elements
+    // Selectors for both native and custom interactive elements
     const selectors = [
         'input:not([type="hidden"])',
         'textarea',
         'select',
-        'button'
+        'button',
+        '[role="button"]',      // Custom buttons
+        '[role="combobox"]',    // Custom dropdowns
+        '[role="listbox"]',
+        '[role="option"]',      // Dropdown options (visible after pre-opening)
+        '[role="radio"]',
+        '[role="checkbox"]',
+        '[role="textbox"]'
     ];
 
-    document.querySelectorAll(selectors.join(',')).forEach(el => {
-        // Skip navigation/header/footer elements
-        if (el.closest('nav, header, footer, [role="navigation"]')) return;
+    // Recursive function to walk DOM including Shadow DOM
+    function walkDOM(rootNode, depth = 0) {
+        const indent = '  '.repeat(depth);
 
-        // Skip if hidden
-        if (el.offsetParent === null && el.type !== 'file') return;
+        // Find all interactive elements in current root
+        rootNode.querySelectorAll(selectors.join(',')).forEach(el => {
+            totalScanned++;
 
-        // Skip file upload inputs
-        if (el.type === 'file') return;
+            // Skip navigation/header/footer elements
+            if (el.closest('nav, header, footer, [role="navigation"]')) {
+                skippedReasons.navigation++;
+                console.log(`${indent}[AutoFill] Skipping (navigation): ${el.tagName} ${el.type || ''}`);
+                return;
+            }
 
-        // Skip submit and reset inputs
-        if (el.type === 'submit' || el.type === 'reset' || el.type === 'image') return;
+            // Skip if hidden
+            if (el.offsetParent === null && el.type !== 'file') {
+                skippedReasons.hidden++;
+                console.log(`${indent}[AutoFill] Skipping (hidden): ${el.tagName} ${el.type || ''}`);
+                return;
+            }
 
-        // Skip action/navigation buttons
-        if (el.tagName.toLowerCase() === 'button' && isActionButton(el)) return;
+            // Skip file upload inputs
+            if (el.type === 'file') {
+                skippedReasons.fileInput++;
+                console.log(`${indent}[AutoFill] Skipping (file input): ${el.tagName}`);
+                return;
+            }
 
-        // Skip if already has a value (pre-filled)
-        if (el.value && el.value.trim() && el.type !== 'button') return;
+            // Skip submit and reset inputs
+            if (el.type === 'submit' || el.type === 'reset' || el.type === 'image') {
+                skippedReasons.submitReset++;
+                console.log(`${indent}[AutoFill] Skipping (submit/reset): ${el.tagName} type=${el.type}`);
+                return;
+            }
 
-        // Get computed accessibility properties
-        const computedRole = el.getAttribute('role') || getImplicitRole(el);
-        const computedName = getAccessibleName(el);
-        const computedDescription = getAccessibleDescription(el);
+            // Skip dropdown control buttons (buttons that open/close dropdowns)
+            if (el.tagName.toLowerCase() === 'button') {
+                const controlsId = el.getAttribute('aria-controls');
+                if (controlsId) {
+                    const controlledElement = document.getElementById(controlsId);
+                    // If button controls a listbox/menu, it's a dropdown button - skip it
+                    if (controlledElement && controlledElement.getAttribute('role') === 'listbox') {
+                        skippedReasons.actionButton++;
+                        console.log(`${indent}[AutoFill] Skipping (dropdown button): controls ${controlsId}`);
+                        return;
+                    }
+                }
 
-        // Skip if we can't determine the name (no label)
-        if (!computedName || computedName === 'Unknown Field') {
-            console.log(`[AutoFill] Skipping element with no accessible name:`, el);
-            return;
-        }
+                // Skip other action/navigation buttons (but keep choice buttons)
+                if (isActionButton(el)) {
+                    skippedReasons.actionButton++;
+                    console.log(`${indent}[AutoFill] Skipping (action button): "${el.textContent.trim().substring(0, 30)}"`);
+                    return;
+                }
+            }
 
-        elements.push({
-            // DOM info
-            tag: el.tagName.toLowerCase(),
-            type: el.type || '',
-            id: el.id || '',
-            name: el.name || '',
-            placeholder: el.placeholder || '',
-            value: el.value || '',
-            required: el.required || false,
-            // A11y info (better labels!)
-            a11yRole: computedRole,
-            a11yName: computedName,  // This is the label!
-            a11yDescription: computedDescription,
-            // Store reference
-            element: el  // Keep DOM reference for execution
+            // Skip pre-filled fields (except buttons) BUT keep custom dropdowns (combobox/listbox)
+            const rawRole = (el.getAttribute('role') || '').toLowerCase();
+            const isCustomDropdown = rawRole === 'combobox' || rawRole === 'listbox';
+            if (el.value && el.value.trim() && el.type !== 'button' && !isCustomDropdown) {
+                skippedReasons.preFilled++;
+                console.log(`${indent}[AutoFill] Skipping (pre-filled): ${el.tagName} ${el.type || ''} value="${el.value.substring(0, 20)}"`);
+                return;
+            }
+
+            // Get semantic info
+            const computedRole = el.getAttribute('role') || getImplicitRole(el);
+            let computedName = getAccessibleName(el);
+
+            // SHADOW DOM HOST FIX:
+            // If we're on a custom element host (has shadowRoot) and no name found,
+            // try to get label from host's own attributes
+            if (!computedName && el.shadowRoot) {
+                computedName = cleanText(
+                    el.getAttribute('label') ||
+                    el.getAttribute('placeholder') ||
+                    el.getAttribute('aria-label') ||
+                    ''
+                );
+                if (computedName) {
+                    console.log(`${indent}[AutoFill] Found label on Shadow DOM host: "${computedName}"`);
+                }
+            }
+
+            // Skip if still no name
+            if (!computedName || computedName === 'Unknown Field') {
+                skippedReasons.noLabel++;
+                console.log(`${indent}[AutoFill] Skipping (no label): ${el.tagName} ${el.type || ''} id=${el.id || 'none'}`);
+                return;
+            }
+
+            console.log(`${indent}[AutoFill] ✓ Found: ${computedRole} "${computedName}" (${el.tagName}${el.type ? ':' + el.type : ''})`);
+
+            elements.push({
+                tag: el.tagName.toLowerCase(),
+                type: el.type || '',
+                id: el.id || '',
+                name: el.name || '',
+                placeholder: el.placeholder || '',
+                value: el.value || '',
+                required: el.required || false,
+                a11yRole: computedRole,
+                a11yName: computedName,
+                a11yDescription: getAccessibleDescription(el),
+                element: el  // Store DOM reference
+            });
         });
-    });
 
-    console.log(`[AutoFill Agent] Extracted ${elements.length} A11y-enhanced elements`);
+        // SHADOW DOM PIERCER:
+        // Find ALL elements in this root and check if they have shadowRoot
+        rootNode.querySelectorAll('*').forEach(el => {
+            if (el.shadowRoot) {
+                console.log(`${indent}[AutoFill] 🔍 Found Shadow DOM in: ${el.tagName.toLowerCase()}`);
+                walkDOM(el.shadowRoot, depth + 1);  // Recurse into shadow root!
+            }
+        });
+    }
+
+    // Start the recursive walk from document body
+    console.log('[AutoFill] ========== Starting Form Element Extraction ==========');
+    walkDOM(document.body);
+
+    console.log('[AutoFill] ========== Extraction Complete ==========');
+    console.log(`[AutoFill] Total scanned: ${totalScanned}`);
+    console.log(`[AutoFill] Found: ${elements.length}`);
+    console.log(`[AutoFill] Skipped breakdown:`, skippedReasons);
+
     return elements;
 }
 
 /**
  * Build element registry and return serialized data for backend
  * Maps element IDs to actual DOM references
+ * ENHANCED: Handles Shadow DOM - stores the REAL input inside custom elements
  */
 function buildElementRegistry(elements) {
     elementRegistry.clear();
 
     elements.forEach((elementData, index) => {
         const id = `elem_${index}`;
+        let domElementToStore = elementData.element;
+
+        // SHADOW DOM FIX:
+        // If element is a custom element host (has shadowRoot),
+        // find the REAL input/textarea/select/button inside it
+        if (elementData.element.shadowRoot) {
+            const internalInput = elementData.element.shadowRoot.querySelector(
+                'input, textarea, select, button'
+            );
+            if (internalInput) {
+                console.log(`[AutoFill] Found internal input in ${elementData.element.tagName}: ${internalInput.tagName}:${internalInput.type || ''}`);
+                domElementToStore = internalInput;  // Use the real input!
+            } else {
+                console.warn(`[AutoFill] Shadow DOM host has no internal form element: ${elementData.element.tagName}`);
+            }
+        }
 
         // Store the mapping
         elementRegistry.set(id, {
-            domElement: elementData.element,  // Actual DOM reference
+            domElement: domElementToStore,  // Now points to actual input (not host)
             a11yName: elementData.a11yName,
             a11yRole: elementData.a11yRole,
             // For serialization to backend
@@ -416,6 +855,10 @@ function buildElementRegistry(elements) {
                 description: elementData.a11yDescription
             }
         });
+
+        // Attach registry metadata back onto element data for later lookups
+        elementData.elementId = id;
+        elementData.domRef = domElementToStore;
     });
 
     return Array.from(elementRegistry.values()).map(v => v.serialized);
@@ -613,98 +1056,116 @@ function findElementFallback(action) {
 
 /**
  * Execute actions returned by LLM (using element registry)
+ * ENHANCED: Awaits popup decisions to prevent stacking
  */
 async function executeActions(actions) {
     for (const action of actions) {
-        // Show popup for low confidence actions
+        // Show popup for low confidence actions - WAIT for user decision
         if (action.confidence === 'low') {
-            showUserPrompt(action);
-            continue;
+            const decision = await showUserPrompt(action);
+
+            if (decision.type === 'skip') {
+                continue; // User skipped, move to next action
+            }
+
+            // Execute based on user's choice
+            if (decision.targetElement && decision.role) {
+                await executeManualAction(
+                    decision.targetElement,
+                    decision.value,
+                    action.interaction,
+                    decision.role
+                );
+            }
+
+            // Save to memory if requested
+            if (decision.type === 'save-global' && decision.label) {
+                saveAnswer(decision.label, decision.value, 'global');
+            } else if (decision.type === 'save-company' && decision.label) {
+                saveAnswer(decision.label, decision.value, 'company');
+            }
+
+            continue; // Move to next action
         }
 
+        // High confidence - execute automatically
         try {
-            // Use element ID to get DOM reference from registry
             const elementData = elementRegistry.get(action.elementId);
 
             if (!elementData) {
-                console.error(`[AutoFill] Element not found in registry: ${action.elementId}`);
-                showUserPrompt(action);
+                console.error(`[AutoFill] Element not found: ${action.elementId}`);
                 continue;
             }
 
             const element = elementData.domElement;
             const role = elementData.a11yRole;
 
-            console.log(`[AutoFill] Executing action: ${action.label} (role: ${role}, value: ${action.value})`);
+            console.log(`[AutoFill] Executing: ${action.label} (role: ${role}, value: ${action.value})`);
 
-            // Execute based on role (more reliable than type checking)
-            if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
-                // Text input, textarea, number, date, etc.
+            // Execute based on interaction type (more robust than role-based)
+            if (action.interaction === 'fill_text') {
                 element.value = action.value;
                 element.dispatchEvent(new Event('input', { bubbles: true }));
                 element.dispatchEvent(new Event('change', { bubbles: true }));
                 element.dispatchEvent(new Event('blur', { bubbles: true }));
-                console.log(`✓ Filled: ${action.label} = ${action.value}`);
+                console.log(`✓ Filled: ${action.label}`);
             }
-            else if (role === 'combobox' || role === 'listbox') {
-                // Select dropdown
-                await selectOption(element, action.value, action.label);
+            else if (action.interaction === 'select_option') {
+                // Validate it's actually a select element
+                if (element.tagName.toLowerCase() === 'select') {
+                    await selectOption(element, action.value, action.label);
+                } else {
+                    console.warn(`[AutoFill] select_option called on ${element.tagName}, treating as fill_text`);
+                    element.value = action.value;
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                }
             }
-            else if (role === 'checkbox' || role === 'switch') {
-                // Checkbox
-                const shouldCheck = action.value === 'true' ||
-                    action.value.toLowerCase() === 'yes' ||
-                    action.value === '1' ||
-                    action.value === true;
+            else if (action.interaction === 'check') {
+                const shouldCheck = action.value === 'true' || action.value.toLowerCase() === 'yes' || action.value === '1' || action.value === true;
                 element.checked = shouldCheck;
                 element.dispatchEvent(new Event('change', { bubbles: true }));
                 element.dispatchEvent(new Event('click', { bubbles: true }));
                 console.log(`✓ ${shouldCheck ? 'Checked' : 'Unchecked'}: ${action.label}`);
             }
-            else if (role === 'button' || role === 'radio') {
-                // Button or radio
+            else if (action.interaction === 'click') {
                 clickElement(element, action.value, action.label);
             }
             else {
-                console.warn(`[AutoFill] Unhandled role: ${role} for ${action.label}`);
+                console.warn(`[AutoFill] Unhandled interaction: ${action.interaction} for ${action.label}`);
             }
 
-            // Small delay between actions
             await new Promise(resolve => setTimeout(resolve, 50));
 
         } catch (error) {
-            console.error(`[AutoFill] Error executing action for ${action.label}:`, error);
-            showUserPrompt(action);
+            console.error(`[AutoFill] Error: ${action.label}:`, error);
         }
     }
 }
 
 /**
  * Select option in dropdown (helper function)
+ * ENHANCED: Handles native <select>, datalist, and custom combobox/listbox
  */
 async function selectOption(element, value, label) {
-    if (element.tagName.toLowerCase() === 'select') {
-        // Improved dropdown selection with multiple matching strategies
+    const tagName = element.tagName.toLowerCase();
+
+    // Case 1: Native <select> dropdown
+    if (tagName === 'select') {
         const options = Array.from(element.options);
         let match = null;
 
         // 1. Exact match
-        match = options.find(opt =>
-            opt.text.toLowerCase() === value.toLowerCase()
-        );
+        match = options.find(opt => opt.text.toLowerCase() === value.toLowerCase());
 
         // 2. Value contains option
         if (!match) {
-            match = options.find(opt =>
-                value.toLowerCase().includes(opt.text.toLowerCase())
-            );
+            match = options.find(opt => value.toLowerCase().includes(opt.text.toLowerCase()));
         }
 
         // 3. Option contains value
         if (!match) {
-            match = options.find(opt =>
-                opt.text.toLowerCase().includes(value.toLowerCase())
-            );
+            match = options.find(opt => opt.text.toLowerCase().includes(value.toLowerCase()));
         }
 
         // 4. Word-level matching
@@ -712,9 +1173,7 @@ async function selectOption(element, value, label) {
             const valueWords = value.toLowerCase().split(/\s+/);
             match = options.find(opt => {
                 const optWords = opt.text.toLowerCase().split(/\s+/);
-                return valueWords.some(vw => optWords.some(ow =>
-                    ow.includes(vw) || vw.includes(ow)
-                ));
+                return valueWords.some(vw => optWords.some(ow => ow.includes(vw) || vw.includes(ow)));
             });
         }
 
@@ -728,19 +1187,20 @@ async function selectOption(element, value, label) {
             console.warn(`[AutoFill] No matching option for: ${label} = "${value}"`);
             console.warn(`Available: ${options.map(o => o.text).join(', ')}`);
         }
-    } else if (element.tagName.toLowerCase() === 'input' && element.hasAttribute('list')) {
-        // Input with datalist
+    }
+
+    // Case 2: Input with datalist
+    else if (tagName === 'input' && element.hasAttribute('list')) {
         element.value = value;
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
         element.dispatchEvent(new Event('blur', { bubbles: true }));
         console.log(`✓ Filled datalist: ${label} = ${value}`);
-    } else {
-        // Custom dropdown fallback
-        element.value = value;
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        console.log(`✓ Filled: ${label} = ${value}`);
+    }
+
+    // Case 3: Unexpected - log warning
+    else {
+        console.warn(`[AutoFill] selectOption() called on non-select element: ${tagName}`);
     }
 }
 
@@ -795,6 +1255,35 @@ function clickElement(element, value, label) {
     element.dispatchEvent(new Event('change', { bubbles: true }));
     element.focus();
     element.dispatchEvent(new Event('focus', { bubbles: true }));
+
+    // Special handling for dropdown options - update hidden postback field
+    // Many custom dropdowns use a hidden field with -postback suffix
+    if (element.getAttribute('role') === 'option') {
+        const optionValue = element.getAttribute('data-value') || element.textContent.trim();
+
+        // Try to find the parent combobox and its postback field
+        const listbox = element.closest('[role="listbox"]');
+        if (listbox) {
+            const listboxId = listbox.id; // e.g., "sTitle-list"
+            const baseId = listboxId.replace('-list', ''); // e.g., "sTitle"
+            const postbackField = document.getElementById(`${baseId}-postback`);
+
+            if (postbackField) {
+                postbackField.value = optionValue;
+                postbackField.dispatchEvent(new Event('change', { bubbles: true }));
+                postbackField.dispatchEvent(new Event('input', { bubbles: true }));
+                console.log(`✓ Updated postback field ${baseId}-postback = "${optionValue}"`);
+            }
+
+            // Also update the display input
+            const displayInput = document.getElementById(`${baseId}-edit`);
+            if (displayInput) {
+                displayInput.value = element.textContent.trim();
+                displayInput.dispatchEvent(new Event('input', { bubbles: true }));
+                displayInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    }
 
     console.log(`✓ Clicked: ${label} = ${value}`);
 }
@@ -1021,216 +1510,244 @@ async function executeActionsOld(actions) {
 
 /**
  * Show popup for user input (positioned near the field)
- * NEW: Uses element registry instead of selectors
+ * ENHANCED: Returns Promise, generates dynamic input, prevents stacking
  */
 function showUserPrompt(action) {
-    // Get element from registry
-    const elementData = elementRegistry.get(action.elementId);
-    let targetElement = null;
+    return new Promise((resolve) => {
+        const elementData = elementRegistry.get(action.elementId);
+        let targetElement = null;
 
-    if (elementData) {
-        targetElement = elementData.domElement;
-    } else {
-        console.warn(`[AutoFill] Element not found in registry for popup: ${action.elementId}`);
-    }
+        if (elementData) {
+            targetElement = elementData.domElement;
+        } else {
+            console.warn(`[AutoFill] Element not found in registry: ${action.elementId}`);
+        }
 
-    // Create popup container
-    const popup = document.createElement('div');
-    popup.id = `autofill-popup-${action.label.replace(/\s+/g, '-')}`;
-    popup.style.cssText = `
-        position: fixed;
-        z-index: 999999;
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        min-width: 350px;
-        max-width: 450px;
-        border: 3px solid #667eea;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
+        const role = elementData?.a11yRole;
+        const companyName = extractCompanyName();
 
-    const companyName = extractCompanyName();
+        // Generate dynamic input based on element type
+        let inputHtml = '';
+        let getValueFunction = null;
 
-    // Show message for different interaction types
-    let actionMessage = '';
-    if (action.interaction === 'click') {
-        actionMessage = '<p style="margin: 0 0 8px 0; color: #22c55e; font-size: 12px; font-weight: 600;">⚡ This will click the button</p>';
-    }
+        // Check if it's a native <select> element (regardless of role)
+        if (targetElement?.tagName.toLowerCase() === 'select') {
+            // Native <select> dropdown - show actual dropdown in popup
+            console.log(`[AutoFill] Creating dropdown popup for: ${action.label}`);
+            inputHtml = '<select id="user-input" style="width: 100%; padding: 8px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;">';
+            const options = targetElement.querySelectorAll('option');
+            let hasOptions = false;
+            options.forEach(opt => {
+                if (opt.value || opt.text.trim()) {
+                    hasOptions = true;
+                    const selected = opt.value === action.value || opt.text === action.value ? 'selected' : '';
+                    inputHtml += `<option value="${opt.value}" ${selected}>${opt.text}</option>`;
+                }
+            });
+            inputHtml += '</select>';
 
-    popup.innerHTML = `
-        <h3 style="margin: 0 0 10px 0; font-size: 17px; color: #333;">🤔 Help Needed</h3>
-        <p style="margin: 0 0 6px 0; color: #666; font-weight: 600; font-size: 14px;">${action.label}</p>
-        <p style="margin: 0 0 8px 0; color: #888; font-size: 12px; font-style: italic;">${action.reasoning || 'The AI needs your help with this field'}</p>
-        ${actionMessage}
-        <input id="user-input" value="${action.value || ''}" placeholder="${action.interaction === 'click' ? 'Leave as-is for button clicks' : 'Enter value...'}" style="
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ddd;
+            if (!hasOptions) {
+                // Fallback to text input if no options found
+                console.warn(`[AutoFill] No options found in select, using text input`);
+                inputHtml = `<input type="text" id="user-input" value="${action.value || ''}" placeholder="Enter value..." style="width: 100%; padding: 8px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box;">`;
+            }
+            getValueFunction = (popup) => popup.querySelector('#user-input').value;
+        }
+        else if (role === 'radio' && targetElement?.type === 'radio') {
+            // Radio button group - show radio buttons in popup
+            console.log(`[AutoFill] Creating radio popup for: ${action.label}`);
+            inputHtml = '<div id="user-input" style="border: 1px solid #ddd; padding: 8px; border-radius: 4px; max-height: 180px; overflow-y: auto;">';
+            const radioGroup = document.querySelectorAll(`input[type="radio"][name="${targetElement.name}"]`);
+            radioGroup.forEach(radio => {
+                const radioLabel = getAccessibleName(radio) || radio.value;
+                const checked = radio.value === action.value ? 'checked' : '';
+                inputHtml += `
+                    <label style="display: block; margin-bottom: 6px; cursor: pointer;">
+                        <input type="radio" name="popup-radio" value="${radio.value}" ${checked} style="margin-right: 6px;">
+                        <span style="font-size: 13px;">${radioLabel}</span>
+                    </label>
+                `;
+            });
+            inputHtml += '</div>';
+            getValueFunction = (popup) => {
+                const checked = popup.querySelector('input[name="popup-radio"]:checked');
+                return checked ? checked.value : '';
+            };
+        }
+        else {
+            // Default: text input
+            console.log(`[AutoFill] Creating text input popup for: ${action.label} (role: ${role})`);
+            inputHtml = `<input type="text" id="user-input" value="${action.value || ''}" placeholder="Enter value..." style="width: 100%; padding: 8px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box;">`;
+            getValueFunction = (popup) => popup.querySelector('#user-input').value;
+        }
+
+        // Create tooltip-style popup (compact and unobtrusive)
+        const popup = document.createElement('div');
+        popup.id = `autofill-popup-${action.label.replace(/\s+/g, '-')}`;
+        popup.style.cssText = `
+            position: fixed;
+            z-index: 999999;
+            background: white;
+            padding: 12px;
             border-radius: 6px;
-            font-size: 14px;
-            box-sizing: border-box;
-            margin-bottom: 14px;
-        " />
-        <div style="display: flex; gap: 6px; flex-direction: column;">
-            <button id="fill-once" style="
-                padding: 10px;
-                background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 13px;
-                font-weight: 600;
-            ">✓ Fill Once (Don't Save)</button>
-            <button id="save-global" style="
-                padding: 10px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 13px;
-                font-weight: 600;
-            ">✨ Save for All Jobs</button>
-            <button id="save-company" style="
-                padding: 10px;
-                background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 13px;
-                font-weight: 600;
-            ">🏢 Save for ${companyName}</button>
-            <button id="skip" style="
-                padding: 9px;
-                background: #f5f5f5;
-                color: #666;
-                border: 1px solid #ddd;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 13px;
-            ">Skip</button>
-        </div>
-    `;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+            min-width: 250px;
+            max-width: 320px;
+            border: 1px solid #667eea;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
 
-    document.body.appendChild(popup);
+        popup.innerHTML = `
+            <div style="margin: 0 0 8px 0; font-size: 13px; font-weight: 600; color: #333;">${action.label}</div>
+            ${action.reasoning ? `<div style="margin: 0 0 8px 0; color: #888; font-size: 11px;">${action.reasoning}</div>` : ''}
+            ${inputHtml}
+            <div style="display: flex; gap: 4px; margin-top: 8px;">
+                <button id="fill-once" style="
+                    flex: 1;
+                    padding: 6px 8px;
+                    background: #22c55e;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    font-weight: 600;
+                ">Fill</button>
+                <button id="save-global" style="
+                    flex: 1;
+                    padding: 6px 8px;
+                    background: #667eea;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    font-weight: 600;
+                ">Save All</button>
+                <button id="skip" style="
+                    padding: 6px 8px;
+                    background: #f3f4f6;
+                    color: #666;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 11px;
+                ">Skip</button>
+            </div>
+            <details style="margin-top: 6px;">
+                <summary style="cursor: pointer; font-size: 10px; color: #888; user-select: none;">More options</summary>
+                <button id="save-company" style="
+                    width: 100%;
+                    margin-top: 4px;
+                    padding: 6px 8px;
+                    background: #f093fb;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    font-weight: 600;
+                ">Save for ${companyName}</button>
+            </details>
+        `;
 
-    // Position popup near the field
-    if (targetElement) {
-        const rect = targetElement.getBoundingClientRect();
-        const popupHeight = 350; // Approximate
-        const popupWidth = 400;
+        document.body.appendChild(popup);
 
-        let top = rect.bottom + 10;
-        let left = rect.left;
-
-        // Check if popup fits below the field
-        const spaceBelow = window.innerHeight - rect.bottom;
-        if (spaceBelow < popupHeight && rect.top > spaceBelow) {
-            // Position above if more space
-            top = rect.top - popupHeight - 10;
-        }
-
-        // Check if popup fits horizontally
-        if (left + popupWidth > window.innerWidth) {
-            left = window.innerWidth - popupWidth - 20;
-        }
-
-        // Ensure popup is not off-screen
-        top = Math.max(10, Math.min(top, window.innerHeight - popupHeight - 10));
-        left = Math.max(10, left);
-
-        popup.style.top = `${top}px`;
-        popup.style.left = `${left}px`;
-
-        // Highlight the field
-        targetElement.style.outline = '3px solid #667eea';
-        targetElement.style.outlineOffset = '2px';
-        targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else {
-        // Fallback to center if element not found
-        popup.style.top = '50%';
-        popup.style.left = '50%';
-        popup.style.transform = 'translate(-50%, -50%)';
-    }
-
-    // Focus input
-    const input = popup.querySelector('#user-input');
-    setTimeout(() => input.focus(), 100);
-
-    // Event handlers
-    popup.querySelector('#fill-once').addEventListener('click', () => {
-        console.log(`[AutoFill] Fill Once clicked for:`, action.label, action.interaction);
-
-        const answer = input ? input.value : '';
-        const valueToUse = answer || action.value || '';
-
-        // Execute using element from registry
+        // Position tooltip-style popup near the field
         if (targetElement) {
-            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
-        }
-        cleanup();
-    });
+            const rect = targetElement.getBoundingClientRect();
+            const popupHeight = 180; // Smaller estimate for tooltip
+            const popupWidth = 280;
 
-    popup.querySelector('#save-global').addEventListener('click', () => {
-        console.log(`[AutoFill] Save Global clicked for:`, action.label, action.interaction);
+            let top = rect.bottom + 8;
+            let left = rect.left;
 
-        const answer = input.value || '';
-        const valueToUse = answer || action.value || '';
+            const spaceBelow = window.innerHeight - rect.bottom;
+            if (spaceBelow < popupHeight && rect.top > spaceBelow) {
+                top = rect.top - popupHeight - 8;
+            }
 
-        // Save to memory (except for click interactions)
-        if (action.interaction !== 'click' && valueToUse) {
-            saveAnswer(action.label, valueToUse, 'global');
-        }
+            if (left + popupWidth > window.innerWidth) {
+                left = window.innerWidth - popupWidth - 10;
+            }
 
-        // Execute using element from registry
-        if (targetElement) {
-            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
-        }
-        cleanup();
-    });
+            top = Math.max(10, Math.min(top, window.innerHeight - popupHeight - 10));
+            left = Math.max(10, left);
 
-    popup.querySelector('#save-company').addEventListener('click', () => {
-        console.log(`[AutoFill] Save Company clicked for:`, action.label, action.interaction);
+            popup.style.top = `${top}px`;
+            popup.style.left = `${left}px`;
 
-        const answer = input.value || '';
-        const valueToUse = answer || action.value || '';
-
-        // Save to memory (except for click interactions)
-        if (action.interaction !== 'click' && valueToUse) {
-            saveAnswer(action.label, valueToUse, 'company');
+            targetElement.style.outline = '2px solid #667eea';
+            targetElement.style.outlineOffset = '1px';
+            targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            popup.style.top = '50%';
+            popup.style.left = '50%';
+            popup.style.transform = 'translate(-50%, -50%)';
         }
 
-        // Execute using element from registry
-        if (targetElement) {
-            executeManualAction(targetElement, valueToUse, action.interaction, elementData.a11yRole);
-        }
-        cleanup();
-    });
+        // Focus input
+        setTimeout(() => {
+            const firstInput = popup.querySelector('#user-input input, #user-input, select');
+            if (firstInput) firstInput.focus();
+        }, 100);
 
-    popup.querySelector('#skip').addEventListener('click', () => {
-        cleanup();
-    });
-
-    // Cleanup function
-    function cleanup() {
-        popup.remove();
-        if (targetElement) {
-            targetElement.style.outline = '';
-            targetElement.style.outlineOffset = '';
-        }
-    }
-
-    // Close on Escape
-    const escapeHandler = (e) => {
-        if (e.key === 'Escape') {
-            cleanup();
+        // Cleanup and resolve function
+        const cleanupAndResolve = (decision) => {
+            popup.remove();
+            if (targetElement) {
+                targetElement.style.outline = '';
+                targetElement.style.outlineOffset = '';
+            }
             document.removeEventListener('keydown', escapeHandler);
-        }
-    };
-    document.addEventListener('keydown', escapeHandler);
+            resolve(decision);
+        };
+
+        // Button handlers
+        popup.querySelector('#fill-once').addEventListener('click', () => {
+            const answer = getValueFunction(popup);
+            cleanupAndResolve({
+                type: 'fill-once',
+                value: answer || action.value || '',
+                targetElement: targetElement,
+                role: role
+            });
+        });
+
+        popup.querySelector('#save-global').addEventListener('click', () => {
+            const answer = getValueFunction(popup);
+            cleanupAndResolve({
+                type: 'save-global',
+                value: answer || action.value || '',
+                targetElement: targetElement,
+                role: role,
+                label: action.label
+            });
+        });
+
+        popup.querySelector('#save-company').addEventListener('click', () => {
+            const answer = getValueFunction(popup);
+            cleanupAndResolve({
+                type: 'save-company',
+                value: answer || action.value || '',
+                targetElement: targetElement,
+                role: role,
+                label: action.label
+            });
+        });
+
+        popup.querySelector('#skip').addEventListener('click', () => {
+            cleanupAndResolve({ type: 'skip' });
+        });
+
+        // Escape key
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') {
+                cleanupAndResolve({ type: 'skip' });
+            }
+        };
+        document.addEventListener('keydown', escapeHandler);
+    });
 }
 
 /**
