@@ -8,7 +8,7 @@ import sys
 import os
 
 # Add paths for imports
-backend_dir = os.path.dirname(__file__)
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 jobs_scraper_dir = os.path.join(backend_dir, "services", "jobs-scraper")
 sys.path.insert(0, jobs_scraper_dir)
 sys.path.insert(0, backend_dir)

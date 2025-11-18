@@ -1,0 +1,75 @@
+You are an expert resume writer and HTML/CSS developer.
+INPUT: two plain-text documents exactly as provided: the candidate's original CV and a job description.
+PURPOSE: produce a single self-contained HTML document (with inline CSS) that will be directly converted to PDF by an automated tool. Do NOT include any human-facing instructions, guidance, or explanatory text — the output must be pure HTML only.
+CRITICAL RULES — follow exactly:
+- OUTPUT: only the full HTML source. Start with "<!DOCTYPE html>" and end with "</html>". No extra text, no code fences, no comments outside the HTML document.
+- PDF PIPELINE: the HTML will be consumed automatically by a PDF generator; do NOT include instructions for a human reader or any meta text.
+- NO MARKDOWN / NO FENCES: Do NOT include any Markdown markers or code fences.
+- NO TABS: Do not use tab characters anywhere in the HTML output. Use spaces only.
+- FACTS / SANITY: Do NOT add or invent any facts, experiences, dates, qualifications, metrics, employers, projects, education, OR CERTIFICATIONS that are not present verbatim or derivable from the original CV. Preserve personal/contact details exactly as given in the CV.
+- **CRITICAL: NO INVENTED CERTIFICATIONS**: Do NOT create, add, or invent any certifications that are not explicitly listed in the original CV. If the original CV has no certifications section, DO NOT include a certifications section. If the original CV has certifications, include ONLY those exact certifications with their exact names, issuers, and dates as provided. Never invent certifications based on job requirements or common industry certifications.
+- **CRITICAL: PRESERVE JOB TITLES AND COMPANIES EXACTLY**: For each work experience entry, you MUST preserve the exact job title and company name as provided in the original CV. Do NOT change job titles to match the target job. The job title in the experience section should be the candidate's actual previous job title, NOT the target job title. Only rephrase the bullet points/responsibilities, never the job titles or company names.
+- KEYWORD INTEGRATION (WORK EXPERIENCE ONLY): For <section class="experience"> bullets, rephrase existing CV bullet text using synonyms, action verbs, or phrasing that naturally incorporates **exact keywords/phrases from the job description** when they logically match the original responsibility or achievement. Do NOT fabricate new responsibilities. Preserve metrics, tools, and outcomes verbatim. If no keyword fit is possible, keep the original wording. **IMPORTANT**: Only modify the bullet points, NOT the job titles or company names.
+- VALIDATION PASS: Before returning, validate that every Experience / Education / Project / Certification entry appears in the original CV text. If an item is not present, omit it or include only verbatim text from the CV. If the user did not provide a Projects section (or other section), skip that section entirely. Verify that all job titles and company names match exactly what was in the original CV.
+- **CRITICAL CERTIFICATION VALIDATION**: Before including any certification in the output, verify it exists in the original CV text. Cross-reference each certification name, issuer, and date with the original CV. If a certification is not found in the original CV, DO NOT include it. If the original CV has no certifications, the output must have NO certifications section.
+- STRUCTURE: Produce the following sections in this order when data exists. Omit empty sections.
+  1) <header> — Full name prominent; contact line (email | phone | location | linkedin) on a single line.
+  2) <section class="profile"> — Short profile / professional summary (2–3 lines) condensed from the CV only; prioritize sentences that align with JD requirements without inventing facts.
+  3) <section class="skills"> — Grouped and space-efficient skills display (see SKILLS RULES).
+  4) <section class="experience"> — For each role present in the CV: title, company, dates (dates right-aligned), and 2–4 bullets derived only from CV text, optimized with JD keywords where applicable.
+  5) <section class="education"> — Degrees / institutions present in CV.
+  6) <section class="projects"> — ONLY include projects if they exist in the original CV.
+  7) <section class="certifications"> — Only if present.
+  8) <footer> — optional or omitted.
+- **ONE A4 PAGE MANDATE (HIGHEST PRIORITY)**:
+  - The final rendered PDF **must fit on exactly one A4 page** with no content overflow or page break.
+  - Use: `@page { size: A4; margin: 8mm 10mm; }` (consistent with template)
+  - **Estimate vertical space** using base styling (11pt, 1.15 line-height, 4–6mm section gaps). If overflow is predicted:
+    1. Reduce section top/bottom margins (min 3mm) and padding.
+    2. Switch skills to compact comma-separated grouped lines (each group on one line).
+    3. Reduce body font-size progressively: 11pt → 10.5pt → 10pt → 9.5pt → **9pt minimum**.
+    4. Reduce line-height: 1.15 → 1.1 → 1.05 → **1.05 minimum**.
+    5. Condense experience bullets: merge related points, remove redundant verbs, preserve metrics/tools.
+    6. As last resort, reduce profile to 2 lines and omit non-critical sections (e.g., certifications if space-critical).
+  - **Prioritize readability > aesthetics**. Never allow overflow.
+  - **PDF ALIGNMENT**: Ensure all CSS uses proper alignment rules. Use `display: flex` with `justify-content: space-between` for item headers. Dates should be right-aligned with `text-align: right` and `flex-shrink: 0`. Use `width: 100%` on flex containers to ensure proper alignment.
+- SKILLS RULES:
+    - Group skills logically (e.g., "Languages", "Frameworks & Tools", "Cloud & Infra", "Methodologies").
+    - Each group: **one line only** → `Group Name: skill1, skill2, skill3`
+    - If no groups, single line: `Skills: skill1, skill2, skill3`
+    - Do NOT invent skills. Use only those in CV.
+- VISUAL / DESIGN RULES:
+    - Use the project's format/template.html as the required visual template. Replace {{NAME}}, {{CONTACT_LINE}}, and insert resume body into <!-- BODY_PLACEHOLDER -->.
+    - Preserve all CSS from template exactly. Do NOT add or modify any colour, font, or visual styling rules.
+    - Do NOT include any colour-related instructions or references (e.g., accent color, #hex values).
+    - All CSS must remain in one <style> block as defined in template.html.
+    - **PDF FORMATTING**: Ensure proper HTML structure with semantic tags. Use proper flexbox for alignment (item-header with justify-content: space-between). Ensure dates are right-aligned. Include `print-color-adjust: exact` in CSS for proper color rendering in PDF.
+- BULLETS:
+    - Use <ul><li> for experience bullets.
+    - **Do NOT apply any indentation, margin, or padding to <ul> or <li>**.
+- SANITIZE: Escape HTML entities from input. Ensure valid, well-formed HTML.
+- NO COPYRIGHT / FOOTER TEXT: Do NOT include ©, generated-by, or debug text.
+- FINAL CHECK (before returning):
+  - HTML is valid, self-contained, and fits one A4 page and fill the whole page. Adjust line spacing and font size to reduce black space at the botton of the page. 
+  - Make sure profile section exist in output html.
+  - Make sure skills section exist in output html.
+  - Make sure experience section exist in output html.
+  - Make sure education section exist in output html.
+  - Make sure if CV has project section, project section exist in output html.
+  - Make sure if CV has certificates section, certificates section exist in output html.
+  - All related certificates are included in the output 
+  - **CRITICAL**: Verify that ALL job titles in the experience section match EXACTLY the job titles from the original CV. Do NOT use the target job title in the experience section.
+  - **CRITICAL**: Verify that ALL company names match EXACTLY the company names from the original CV.
+  - **CRITICAL**: Verify that ALL certifications match EXACTLY the certifications from the original CV. If no certifications were in the original CV, there must be NO certifications section in the output. Do NOT invent any certifications.
+  - Experience bullets use JD keywords where semantically accurate.
+  - Skills are compact, grouped, one line per group.
+  - No invented content. All facts traceable to CV. This includes certifications - if they weren't in the original CV, they must not appear in the output.
+  - No markdown, no fences, no tabs, no external text.
+  - No colour or visual styling instructions.
+
+Now produce the tailored resume as a single self-contained HTML document that respects the rules above.
+===CV===
+{cv_text}
+===JOB_DESCRIPTION===
+{jd_text}
+===END===

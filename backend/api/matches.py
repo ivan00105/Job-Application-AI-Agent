@@ -11,7 +11,7 @@ from database.postgres_client import get_db, PostgresClient
 router = APIRouter()
 
 
-@router.get("/", response_model=dict)
+@router.get("", response_model=dict)
 async def get_matches(
     limit: int = 10,
     current_user: dict = Depends(get_current_user),

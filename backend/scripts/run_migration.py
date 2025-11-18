@@ -13,7 +13,7 @@ async def run_migration():
     """Run the database migration"""
     print("Running database migration...\n")
     
-    migration_file = Path(__file__).parent.parent.parent / "supabase" / "migrations" / "20251005111019_create_initial_schema.sql"
+    migration_file = Path(__file__).parent.parent / "migrations" / "create_initial_schema.sql"
     
     if not migration_file.exists():
         print(f"Migration file not found: {migration_file}")
