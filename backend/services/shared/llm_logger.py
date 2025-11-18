@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent.parent
 LOG_DIR = BASE_DIR / "data" / "logs" / "llm"
 
+# Try to import config to check if logging is enabled
+def _is_logging_enabled() -> bool:
+    """Check if LLM logging is enabled via config"""
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        return getattr(settings, 'enable_llm_logging', True)
+    except (ImportError, AttributeError):
+        try:
+            from config import get_settings
+            settings = get_settings()
+            return getattr(settings, 'enable_llm_logging', True)
+        except (ImportError, AttributeError):
+            # Fallback: check environment variable directly
+            env_value = os.getenv('ENABLE_LLM_LOGGING', 'true').lower()
+            return env_value in ('true', '1', 'yes', 'on')
+
 
 def ensure_log_dir():
     """Ensure the log directory exists"""
@@ -51,6 +68,10 @@ def log_llm_call(
         tokens_used: Number of tokens used
         metadata: Additional metadata
     """
+    # Check if logging is enabled
+    if not _is_logging_enabled():
+        return
+    
     try:
         ensure_log_dir()
         

@@ -34,6 +34,12 @@ Thumbs.db
 logs/
 backend/data/logs/
 
+# Data files (generated/temporary)
+backend/data/cv/*.html
+backend/data/cv/*.pdf
+backend/data/jobs/jobs_*.csv
+backend/data/jobs/*_not_saved.csv
+
 # Temporary files
 *.tmp
 *.backup

@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openai/gpt-oss-120b"
     enable_llm_query_enhancement: bool = True
+    enable_llm_logging: bool = True  # Enable/disable LLM call logging to files
     
     # CV Generation Configuration
     use_agentic_cv_generation: bool = True  # Use agentic multi-step reasoning for CV generation
