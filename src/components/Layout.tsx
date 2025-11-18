@@ -35,7 +35,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
                   className="text-gray-700 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium flex items-center"
                 >
                   <Target className="h-4 w-4 mr-1" />
-                  Matches
+                  Dashboard
                 </Link>
                 <Link
                   to="/jobs"

@@ -46,12 +46,6 @@ class JobScraperSettings(BaseSettings):
     ollama_embedding_model: str = "bge-m3"
     embedding_dim: int = 1024  # BGE-M3 produces 1024-dimensional embeddings
     
-    # Alternative: OpenAI/Anthropic embeddings (optional)
-    openai_api_key: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    use_openai_embeddings: bool = False
-    openai_embedding_model: str = "text-embedding-3-small"  # 1536 dimensions
-    
     # Scraping Configuration
     scrape_sites: List[str] = ["indeed", "linkedin", "google"]
     scrape_results_wanted: int = 1000
@@ -65,6 +59,9 @@ class JobScraperSettings(BaseSettings):
     enable_duplicate_detection: bool = True
     use_vector_duplicate_detection: bool = True  # Use Qdrant vector search for duplicate detection
     duplicate_similarity_threshold: float = 0.95  # Similarity threshold for duplicate detection (0.0-1.0)
+    
+    # CSV Export Configuration
+    save_jobs_csv: bool = True  # Enable/disable saving scraping results to CSV files in backend/data/jobs
     
     # Calculate .env file path
     _config_dir = os.path.dirname(__file__)

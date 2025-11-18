@@ -4,12 +4,14 @@ Handles job search, filtering, and retrieval.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
 import os
 import sys
 import json
 import logging
+import re
 
-from models.job import Job, JobSearchParams, JobDataSearch, JobSearchResult, SearchResponse
+from models.job import Job, JobSearchParams, JobDataSearch, JobSearchResult
 from api.auth import get_current_user
 from database.postgres_client import get_db, PostgresClient
 
@@ -23,6 +25,202 @@ from llm_service import llm_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _clean_text(value: Optional[str]) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
+
+
+def _format_years(value: Optional[Any]) -> Optional[str]:
+    if value is None:
+        return None
+    numeric_value = None
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+    elif isinstance(value, str):
+        match = re.search(r"\d+(\.\d+)?", value)
+        if match:
+            numeric_value = float(match.group())
+    if numeric_value is None:
+        return None
+    if numeric_value.is_integer():
+        numeric_value = int(numeric_value)
+    return f"{numeric_value} years"
+
+
+async def build_user_profile_context(
+    user_id: str,
+    db: PostgresClient,
+    max_length: int = 1500
+) -> Optional[str]:
+    """
+    Build a compact string summary of the user's profile data for LLM context.
+    Includes summary, skills, experience highlights, and education/certifications.
+    """
+    profile = await db.fetch_one(
+        "SELECT raw_text, parsed_data FROM cv_profiles WHERE user_id = $1",
+        user_id
+    )
+    if not profile:
+        return None
+
+    context_sections: List[str] = []
+    parsed_data = profile.get("parsed_data")
+
+    if isinstance(parsed_data, str):
+        try:
+            parsed_data = json.loads(parsed_data)
+        except json.JSONDecodeError:
+            parsed_data = None
+
+    if isinstance(parsed_data, dict):
+        summary = _clean_text(parsed_data.get("summary"))
+        if summary:
+            context_sections.append(f"Summary: {summary[:300]}")
+
+        total_experience = (
+            _format_years(parsed_data.get("total_experience_years"))
+            or _format_years(parsed_data.get("years_of_experience"))
+            or _format_years(parsed_data.get("experience_years"))
+        )
+        if total_experience:
+            context_sections.append(f"Experience level: {total_experience}")
+
+        # Skills (flatten dict/list structures)
+        skills = parsed_data.get("skills")
+        skill_values: List[str] = []
+        if isinstance(skills, dict):
+            for value in skills.values():
+                if isinstance(value, list):
+                    skill_values.extend(
+                        _clean_text(skill) for skill in value if isinstance(skill, str)
+                    )
+        elif isinstance(skills, list):
+            skill_values.extend(
+                _clean_text(skill) for skill in skills if isinstance(skill, str)
+            )
+        skill_values = [skill for skill in skill_values if skill]
+        if skill_values:
+            context_sections.append(
+                "Key skills: " + ", ".join(skill_values[:15])
+            )
+
+        # Experience highlights
+        experiences = parsed_data.get("experiences")
+        experience_summaries: List[str] = []
+        if isinstance(experiences, list):
+            for experience in experiences[:3]:
+                if not isinstance(experience, dict):
+                    continue
+                title = _clean_text(experience.get("title"))
+                company = _clean_text(experience.get("company"))
+                location = _clean_text(experience.get("location"))
+                start_date = _clean_text(
+                    experience.get("start_date") or experience.get("start")
+                )
+                end_date = _clean_text(
+                    experience.get("end_date") or experience.get("end")
+                )
+                duration = _format_years(
+                    experience.get("duration_years")
+                    or experience.get("years")
+                    or experience.get("experience_years")
+                )
+                descriptor_parts = [part for part in [title, company] if part]
+                descriptor = " at ".join(descriptor_parts) if descriptor_parts else ""
+                if location:
+                    descriptor = f"{descriptor} ({location})" if descriptor else location
+                timeline_parts = []
+                if start_date or end_date:
+                    timeline_parts.append(f"{start_date or '?'}-{end_date or 'Present'}".strip("-"))
+                if duration:
+                    timeline_parts.append(duration)
+                if timeline_parts:
+                    descriptor = (
+                        f"{descriptor} [{' | '.join(timeline_parts)}]"
+                        if descriptor
+                        else f"[{' | '.join(timeline_parts)}]"
+                    )
+
+                highlights = experience.get("highlights")
+                highlight_text = ""
+                if isinstance(highlights, list):
+                    highlight_candidates = [
+                        _clean_text(item) for item in highlights if isinstance(item, str)
+                    ]
+                    highlight_text = "; ".join(
+                        [item for item in highlight_candidates if item][:2]
+                    )
+                if not highlight_text:
+                    highlight_text = _clean_text(experience.get("summary"))
+
+                entry = descriptor
+                if highlight_text:
+                    entry = f"{descriptor} - {highlight_text}" if descriptor else highlight_text
+
+                entry = entry.strip()
+                if entry:
+                    experience_summaries.append(entry[:200])
+        if experience_summaries:
+            context_sections.append(
+                "Experience: " + " | ".join(experience_summaries)
+            )
+
+        # Education
+        education_entries = parsed_data.get("education")
+        education_summaries: List[str] = []
+        if isinstance(education_entries, list):
+            for edu in education_entries[:2]:
+                if not isinstance(edu, dict):
+                    continue
+                degree = _clean_text(edu.get("degree") or edu.get("qualification"))
+                institution = _clean_text(edu.get("institution") or edu.get("school"))
+                focus = _clean_text(edu.get("field"))
+                parts = [part for part in [degree, focus] if part]
+                descriptor = " in ".join(parts) if parts else ""
+                if institution:
+                    descriptor = f"{descriptor} at {institution}" if descriptor else institution
+                if descriptor:
+                    education_summaries.append(descriptor[:180])
+        if education_summaries:
+            context_sections.append(
+                "Education: " + " | ".join(education_summaries)
+            )
+
+        # Certifications
+        certifications = parsed_data.get("certifications")
+        cert_values: List[str] = []
+        if isinstance(certifications, list):
+            cert_values = [
+                _clean_text(cert) for cert in certifications if isinstance(cert, str)
+            ]
+        elif isinstance(certifications, dict):
+            for value in certifications.values():
+                if isinstance(value, list):
+                    cert_values.extend(
+                        _clean_text(cert) for cert in value if isinstance(cert, str)
+                    )
+        cert_values = [cert for cert in cert_values if cert]
+        if cert_values:
+            context_sections.append(
+                "Certifications: " + ", ".join(cert_values[:5])
+            )
+
+    # Fallback to raw text snippet if structured data unavailable
+    if not context_sections and profile.get("raw_text"):
+        raw_excerpt = _clean_text(profile["raw_text"])
+        if raw_excerpt:
+            context_sections.append(f"Raw CV excerpt: {raw_excerpt[:500]}")
+
+    if not context_sections:
+        return None
+
+    context = "\n".join(context_sections)
+    if len(context) > max_length:
+        context = context[:max_length]
+    return context.strip()
 
 
 @router.get("/", response_model=dict)
@@ -44,8 +242,9 @@ async def search_jobs(
     param_count = 2
 
     if hide_saved:
-        # Hide jobs that have been saved (status = 'saved')
-        conditions.append("(a.id IS NULL OR a.status != 'saved')")
+        # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+        # Use NOT EXISTS to explicitly exclude jobs with any application record
+        conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
 
     if location:
         conditions.append(f"j.location ILIKE ${param_count}")
@@ -121,11 +320,61 @@ async def get_recommended_jobs(
     1. CV profile matches (if CV exists)
     2. Similar jobs to saved jobs (if saved jobs exist)
     3. Latest jobs (fallback if no CV and no saved jobs)
+    
+    Results are cached for 24 hours to avoid repeated expensive operations.
     """
     recommended_jobs = []
     total = 0
     source = "latest"  # Track where recommendations came from
     
+    # Check cache first (valid for 24 hours)
+    cache = await db.fetch_one(
+        "SELECT * FROM recommended_jobs_cache WHERE user_id = $1 AND expires_at > NOW()",
+        current_user["id"]
+    )
+    
+    if cache:
+        # Use cached job IDs
+        job_ids = cache.get("job_ids", [])
+        if job_ids:
+            # Get job details for cached IDs
+            conditions = ["j.id = ANY($2::uuid[])", "j.is_active = TRUE"]
+            params = [current_user["id"], job_ids]
+            param_count = 3
+            
+            if hide_saved:
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
+            
+            where_clause = " AND ".join(conditions)
+            
+            search_query_sql = f"""
+                SELECT j.*, 
+                       CASE WHEN a.id IS NOT NULL THEN true ELSE false END as applied,
+                       a.status as application_status,
+                       a.id as application_id
+                FROM jobs j
+                LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
+                WHERE {where_clause}
+                ORDER BY j.posted_date DESC NULLS LAST, j.retrieved_date DESC
+                LIMIT ${param_count} OFFSET ${param_count + 1}
+            """
+            params.extend([limit, offset])
+            
+            cached_jobs = await db.fetch_all(search_query_sql, *params)
+            recommended_jobs = [dict(job) for job in cached_jobs]
+            total = len(job_ids)
+            source = "cached"
+            
+            return {
+                "jobs": recommended_jobs,
+                "total": total,
+                "source": source,
+                "cached": True
+            }
+    
+    # Cache expired or doesn't exist, generate new recommendations
     try:
         # Try to get job matches from CV profile first
         profile = await db.fetch_one("SELECT id, raw_text, parsed_data FROM cv_profiles WHERE user_id = $1", current_user["id"])
@@ -231,19 +480,19 @@ async def get_recommended_jobs(
                                         job_ids.append(str(job_id))
                                 
                                 if job_ids:
-                                    # Get already saved job IDs to exclude them if hide_saved is True
-                                    saved_job_ids = []
+                                    # Get already applied/saved job IDs to exclude them if hide_saved is True
+                                    applied_job_ids = []
                                     if hide_saved:
-                                        saved_apps = await db.fetch_all(
+                                        applied_apps = await db.fetch_all(
                                             """SELECT job_id FROM applications 
-                                               WHERE user_id = $1 AND status = 'saved'""",
+                                               WHERE user_id = $1""",
                                             current_user["id"]
                                         )
-                                        saved_job_ids = [str(app["job_id"]) for app in saved_apps]
+                                        applied_job_ids = [str(app["job_id"]) for app in applied_apps]
                                     
-                                    # Filter out saved jobs if needed
-                                    if hide_saved and saved_job_ids:
-                                        job_ids = [j_id for j_id in job_ids if j_id not in saved_job_ids]
+                                    # Filter out applied/saved jobs if needed
+                                    if hide_saved and applied_job_ids:
+                                        job_ids = [j_id for j_id in job_ids if j_id not in applied_job_ids]
                                     
                                     if job_ids:
                                         # Limit to requested amount
@@ -254,7 +503,9 @@ async def get_recommended_jobs(
                                         param_count = 3
                                         
                                         if hide_saved:
-                                            conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                                            # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                                            # Use NOT EXISTS to explicitly exclude jobs with any application record
+                                            conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
                                         
                                         where_clause = " AND ".join(conditions)
                                         
@@ -359,15 +610,15 @@ async def get_recommended_jobs(
                                 # Filter out already saved jobs
                                 job_ids = [j_id for j_id in vector_job_ids if j_id not in saved_job_ids]
                                 
-                                # Also filter out saved jobs if hide_saved is True
+                                # Also filter out applied/saved jobs if hide_saved is True
                                 if hide_saved:
-                                    saved_apps = await db.fetch_all(
+                                    applied_apps = await db.fetch_all(
                                         """SELECT job_id FROM applications 
-                                           WHERE user_id = $1 AND status = 'saved'""",
+                                           WHERE user_id = $1""",
                                         current_user["id"]
                                     )
-                                    saved_job_ids = [str(app["job_id"]) for app in saved_apps]
-                                    job_ids = [j_id for j_id in job_ids if j_id not in saved_job_ids]
+                                    applied_job_ids = [str(app["job_id"]) for app in applied_apps]
+                                    job_ids = [j_id for j_id in job_ids if j_id not in applied_job_ids]
                                 
                                 if job_ids:
                                     # Limit to requested amount
@@ -378,7 +629,9 @@ async def get_recommended_jobs(
                                     param_count = 3
                                     
                                     if hide_saved:
-                                        conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                                        # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                                        # Use NOT EXISTS to explicitly exclude jobs with any application record
+                                        conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
                                     
                                     where_clause = " AND ".join(conditions)
                                     
@@ -429,7 +682,9 @@ async def get_recommended_jobs(
             param_count = 2
             
             if hide_saved:
-                conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
             
             where_clause = " AND ".join(conditions)
             
@@ -456,6 +711,25 @@ async def get_recommended_jobs(
             jobs = await db.fetch_all(search_query, *params)
             recommended_jobs = [dict(job) for job in jobs]
             source = "latest"
+        
+        # Cache the results for 24 hours
+        if recommended_jobs:
+            job_ids = [str(job.get("id")) for job in recommended_jobs if job.get("id")]
+            if job_ids:
+                expires_at = datetime.now() + timedelta(days=1)
+                await db.execute(
+                    """INSERT INTO recommended_jobs_cache 
+                       (user_id, job_ids, cached_at, expires_at)
+                       VALUES ($1, $2::uuid[], NOW(), $3)
+                       ON CONFLICT (user_id) 
+                       DO UPDATE SET 
+                         job_ids = $2::uuid[],
+                         cached_at = NOW(),
+                         expires_at = $3""",
+                    current_user["id"],
+                    job_ids,
+                    expires_at
+                )
     
     except Exception as e:
         logger.error(f"Error getting recommended jobs: {e}. Falling back to latest jobs.")
@@ -465,7 +739,9 @@ async def get_recommended_jobs(
         param_count = 2
         
         if hide_saved:
-            conditions.append("(a.id IS NULL OR a.status != 'saved')")
+            # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+            # Use NOT EXISTS to explicitly exclude jobs with any application record
+            conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
         
         where_clause = " AND ".join(conditions)
         
@@ -498,7 +774,8 @@ async def get_recommended_jobs(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "source": source  # Indicate where recommendations came from
+        "source": source,  # Indicate where recommendations came from
+        "cached": False
     }
 
 
@@ -597,15 +874,15 @@ async def get_similar_jobs(
                 # Limit to requested amount
                 job_ids = job_ids[:limit]
                 
-                # Get already saved/applied job IDs to exclude if hide_saved is True
+                # Get already applied/saved job IDs to exclude if hide_saved is True
                 excluded_job_ids = []
                 if hide_saved:
-                    saved_apps = await db.fetch_all(
+                    applied_apps = await db.fetch_all(
                         """SELECT job_id FROM applications 
-                           WHERE user_id = $1 AND status = 'saved'""",
+                           WHERE user_id = $1""",
                         current_user["id"]
                     )
-                    excluded_job_ids = [str(app["job_id"]) for app in saved_apps]
+                    excluded_job_ids = [str(app["job_id"]) for app in applied_apps]
                 
                 # Filter out excluded jobs
                 if excluded_job_ids:
@@ -625,7 +902,9 @@ async def get_similar_jobs(
                 param_count = 4
                 
                 if hide_saved:
-                    conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                    # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                    # Use NOT EXISTS to explicitly exclude jobs with any application record
+                    conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
                 
                 where_clause = " AND ".join(conditions)
                 
@@ -674,7 +953,9 @@ async def get_similar_jobs(
             param_count = 3
             
             if hide_saved:
-                conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
             
             # Build keyword search from job title and company
             if job.get("title"):
@@ -804,85 +1085,6 @@ def filter_job_results(
     return filtered_results[:limit]
 
 
-@router.post("/search", response_model=SearchResponse)
-async def search_jobs_vector(
-    search: JobDataSearch,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Search for jobs using vector similarity search.
-    Uses LLM to enhance the search query for better results.
-    Supports structured filtering by company, experience, and certifications.
-    
-    This endpoint performs semantic search on job embeddings stored in Qdrant.
-    """
-    try:
-        # Get collection name (default to "job_data" if not specified)
-        collection_name = search.collection_name or os.getenv("QDRANT_COLLECTION_NAME", "job_data")
-        
-        # Enhance query using LLM if enabled
-        enhanced_query = search.query
-        use_llm = search.use_llm_enhancement
-        if use_llm is None:
-            # Check global setting
-            enable_llm = os.getenv("ENABLE_LLM_QUERY_ENHANCEMENT", "true").lower() == "true"
-            use_llm = enable_llm
-        
-        if use_llm:
-            enhanced_query = await llm_service.enhance_job_search_query(search.query)
-        
-        # Generate embedding for enhanced query
-        query_vector = await embedding_service.generate_embedding(enhanced_query)
-        
-        # Build filter conditions for Qdrant (company filter can be done at Qdrant level)
-        filter_conditions = search.filter_conditions or {}
-        if search.company_filter:
-            filter_conditions['company'] = search.company_filter
-        
-        # Search in Qdrant (request more results if we need to filter post-search)
-        search_limit = search.limit
-        if search.certifications or search.min_experience_years:
-            # Request more results to account for filtering
-            search_limit = min(search.limit * 3, 100)
-        
-        results = qdrant_service.search_jobs(
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=search_limit,
-            score_threshold=search.score_threshold,
-            filter_conditions=filter_conditions if filter_conditions else None
-        )
-        
-        # Apply post-processing filters (certifications, experience)
-        # Note: company filter is already applied via Qdrant filter_conditions
-        filtered_results = filter_job_results(
-            results=results,
-            company_filter=None,  # Already filtered at Qdrant level
-            min_experience_years=search.min_experience_years,
-            certifications=search.certifications,
-            limit=search.limit
-        )
-        
-        # Convert to response format
-        search_results = [
-            JobSearchResult(
-                id=result['id'],
-                score=result['score'],
-                payload=result['payload']
-            )
-            for result in filtered_results
-        ]
-        
-        return SearchResponse(
-            results=search_results,
-            count=len(search_results)
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error searching jobs: {str(e)}")
-
-
 @router.post("/search-vector", response_model=dict)
 async def search_jobs_vector_with_db(
     search: JobDataSearch,
@@ -917,8 +1119,18 @@ async def search_jobs_vector_with_db(
                 use_llm = enable_llm
             
             if use_llm:
+                profile_context = None
                 try:
-                    enhanced_query = await llm_service.enhance_job_search_query(search.query)
+                    profile_context = await build_user_profile_context(current_user["id"], db)
+                except Exception as profile_err:
+                    logger.warning(
+                        f"Unable to build user profile context for query enhancement: {profile_err}"
+                    )
+                try:
+                    enhanced_query = await llm_service.enhance_job_search_query(
+                        search.query,
+                        context=profile_context
+                    )
                 except Exception as llm_err:
                     # LLM enhancement failed, use original query
                     logger.warning(
@@ -1029,8 +1241,9 @@ async def search_jobs_vector_with_db(
             param_count = 3
             
             if hide_saved:
-                # Hide jobs that have been saved (status = 'saved')
-                conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
             
             # Location filtering: if not already filtered in Qdrant, filter in SQL
             if location and 'location' not in filter_conditions:
@@ -1093,8 +1306,9 @@ async def search_jobs_vector_with_db(
             param_count = 2
 
             if hide_saved:
-                # Hide jobs that have been saved (status = 'saved')
-                conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
 
             if location:
                 conditions.append(f"j.location ILIKE ${param_count}")
@@ -1161,8 +1375,9 @@ async def search_jobs_vector_with_db(
             param_count = 2
 
             if hide_saved:
-                # Hide jobs that have been saved (status = 'saved')
-                conditions.append("(a.id IS NULL OR a.status != 'saved')")
+                # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                # Use NOT EXISTS to explicitly exclude jobs with any application record
+                conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
 
             if location:
                 conditions.append(f"j.location ILIKE ${param_count}")

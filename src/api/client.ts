@@ -3,7 +3,33 @@
  */
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Get API URL from environment, with security fix for HTTPS pages
+let rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+// If page is HTTPS but API URL is HTTP, automatically upgrade to HTTPS for security
+if (typeof window !== 'undefined' && window.location.protocol === 'https:' && rawApiUrl.startsWith('http://')) {
+  console.warn('⚠️ Auto-upgrading HTTP API URL to HTTPS for security');
+  rawApiUrl = rawApiUrl.replace('http://', 'https://');
+}
+
+export const API_BASE_URL = rawApiUrl;
+
+// Log API URL for debugging (both dev and production)
+console.log('🔗 API Base URL:', API_BASE_URL);
+console.log('📡 Full API URL:', `${API_BASE_URL}/api`);
+console.log('🌍 Environment:', import.meta.env.MODE);
+console.log('📦 VITE_API_URL from env:', import.meta.env.VITE_API_URL);
+
+// Log warning if not configured
+if (!import.meta.env.VITE_API_URL) {
+  console.warn('⚠️ VITE_API_URL not set in .env file, using default: http://localhost:8000');
+  console.warn('💡 Create .env file in project root with: VITE_API_URL=https://api-aijobsfinder.groture.com');
+} else if (import.meta.env.VITE_API_URL.startsWith('http://') && typeof window !== 'undefined' && window.location.protocol === 'https:') {
+  console.error('❌ SECURITY ISSUE: Frontend is HTTPS but API URL is HTTP!');
+  console.error('   Current API URL:', import.meta.env.VITE_API_URL);
+  console.error('   Auto-fixed to:', API_BASE_URL);
+  console.error('   Fix: Update .env file to use https:// and rebuild frontend');
+}
 
 const api = axios.create({
   baseURL: `${API_BASE_URL}/api`,
@@ -83,6 +109,13 @@ export const cvAPI = {
   deleteProfile: async () => {
     await api.delete('/cv/profile');
   },
+
+  getProfileScoring: async (forceRefresh: boolean = false) => {
+    const response = await api.get('/cv/profile/scoring', {
+      params: { force_refresh: forceRefresh }
+    });
+    return response.data;
+  },
 };
 
 // Jobs API
@@ -95,7 +128,7 @@ export const jobsAPI = {
     limit?: number;
     offset?: number;
   }) => {
-    const response = await api.get('/jobs', { params });
+    const response = await api.get('/jobs/', { params }); // Use trailing slash to avoid 307 redirect
     return response.data;
   },
 
@@ -219,6 +252,186 @@ export const applicationsAPI = {
   prepareCV: async (jobId: string) => {
     const response = await api.post(`/applications/${jobId}/prepare/cv`);
     return response.data;
+  },
+
+  refineCV: async (cvId: string) => {
+    const response = await api.post(`/applications/prepare/cv/${cvId}/refine`);
+    return response.data;
+  },
+
+  saveCVDraft: async (cvId: string, htmlContent: string, status: 'draft' | 'final' = 'draft', notes?: string) => {
+    const response = await api.put(`/applications/prepare/cv/${cvId}/save`, {
+      html_content: htmlContent,
+      status,
+      notes
+    });
+    return response.data;
+  },
+
+  validateCV: async (cvId: string, htmlContent: string) => {
+    const response = await api.post(`/applications/prepare/cv/${cvId}/validate`, {
+      html_content: htmlContent
+    });
+    return response.data;
+  },
+
+  exportCVToPDF: async (cvId: string, htmlContent?: string, htmlFilename?: string) => {
+    console.log('API: exportCVToPDF called', { cvId, htmlContentLength: htmlContent?.length, htmlFilename });
+    try {
+      // Send HTML content if provided (most current), otherwise backend will use database or file
+      const requestBody: any = {};
+      if (htmlContent && htmlContent.trim().length > 0) {
+        requestBody.html_content = htmlContent;
+        console.log('API: Sending HTML content in request body', { length: htmlContent.length });
+      } else if (htmlFilename) {
+        requestBody.html_filename = htmlFilename;
+      }
+      const response = await api.post(
+        `/applications/prepare/cv/${cvId}/export-pdf`,
+        requestBody,
+        {
+          responseType: 'blob',
+          timeout: 120000, // 2 minute timeout for PDF generation
+        }
+      );
+      console.log('API: Response received', {
+        status: response.status,
+        contentType: response.headers['content-type'],
+        dataType: response.data?.constructor?.name,
+        dataSize: response.data?.size
+      });
+      // Check if response is actually a PDF
+      if (response.data instanceof Blob && response.data.type === 'application/pdf') {
+        console.log('API: Valid PDF blob received');
+        return response.data;
+      }
+      // If not a PDF, might be an error - try to parse it
+      throw new Error('Response is not a PDF file');
+    } catch (error: any) {
+      // If error response is a blob, try to parse it as JSON or text
+      if (error.response?.data instanceof Blob) {
+        try {
+          const contentType = error.response.headers['content-type'] || '';
+          const errorText = await error.response.data.text();
+          
+          let errorDetail = 'PDF generation failed';
+          if (contentType.includes('application/json') || errorText.trim().startsWith('{')) {
+            try {
+              const errorJson = JSON.parse(errorText);
+              errorDetail = errorJson.detail || errorJson.message || errorDetail;
+            } catch {
+              // If JSON parse fails, use text as is
+              errorDetail = errorText || errorDetail;
+            }
+          } else {
+            // Plain text error
+            errorDetail = errorText || errorDetail;
+          }
+          
+          // Create a new error with the parsed detail
+          const newError: any = new Error(errorDetail);
+          newError.response = {
+            ...error.response,
+            data: { detail: errorDetail }
+          };
+          throw newError;
+        } catch (parseError) {
+          // If parsing fails, throw original error with status info
+          const statusError: any = new Error(
+            `PDF generation failed with status ${error.response?.status || 'unknown'}. ` +
+            `Please check backend logs for details.`
+          );
+          statusError.response = error.response;
+          throw statusError;
+        }
+      }
+      throw error;
+    }
+  },
+
+  aiAssistCV: async (cvId: string, selectionHtml: string, intent: string, context?: any, timeout: number = 60000, signal?: AbortSignal) => {
+    try {
+      const response = await api.post(`/applications/prepare/cv/${cvId}/assist`, {
+        selection_html: selectionHtml,
+        intent,
+        context
+      }, {
+        timeout,
+        signal
+      });
+      return response.data;
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.code === 'ECONNABORTED') {
+        throw new Error('Request timed out. Please try again.');
+      }
+      throw error;
+    }
+  },
+
+  aiAssistCVStream: async (cvId: string, selectionHtml: string, intent: string, context?: any, timeout: number = 60000, signal?: AbortSignal) => {
+    const token = localStorage.getItem('access_token');
+    
+    // Create a combined abort controller that handles both user cancellation and timeout
+    const timeoutAbortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      timeoutAbortController.abort();
+    }, timeout);
+
+    // Combine signals if both are provided (compatible with older browsers)
+    const combinedAbortController = new AbortController();
+    let isTimeout = false;
+    
+    // Listen to timeout signal
+    timeoutAbortController.signal.addEventListener('abort', () => {
+      isTimeout = true;
+      combinedAbortController.abort();
+    });
+    
+    // Listen to user signal if provided
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        combinedAbortController.abort();
+      });
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/applications/prepare/cv/${cvId}/assist/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          selection_html: selectionHtml,
+          intent,
+          context
+        }),
+        signal: combinedAbortController.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to stream AI assist response');
+      }
+
+      if (!response.body) {
+        throw new Error('Streaming not supported in this browser');
+      }
+
+      return response;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError' || combinedAbortController.signal.aborted) {
+        if (isTimeout) {
+          throw new Error('Request timed out. Please try again.');
+        }
+        throw new Error('Request was cancelled. Please try again.');
+      }
+      throw error;
+    }
   },
 
   prepareCoverLetter: async (jobId: string) => {

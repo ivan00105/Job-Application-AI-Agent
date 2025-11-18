@@ -122,12 +122,15 @@ class JobScraperService:
         logger.info("Step 3: Saving jobs to database and Qdrant...")
         results = await self._save_jobs_batch(processed_df, batch_size, jobs_df)
         
-        # Step 4: Save CSV file
-        logger.info("Step 4: Saving CSV file...")
-        csv_path = self._save_csv_file(jobs_df, results)
-        if csv_path:
-            logger.info(f"✅ CSV file saved: {csv_path}")
-            results['csv_file'] = csv_path
+        # Step 4: Save CSV file (if enabled)
+        if self.settings.save_jobs_csv:
+            logger.info("Step 4: Saving CSV file...")
+            csv_path = self._save_csv_file(jobs_df, results)
+            if csv_path:
+                logger.info(f"✅ CSV file saved: {csv_path}")
+                results['csv_file'] = csv_path
+        else:
+            logger.info("Step 4: CSV saving disabled (SAVE_JOBS_CSV=false)")
         
         logger.info("=" * 60)
         logger.info("Scraping Process Complete")

@@ -3,6 +3,7 @@
  */
 import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
+import { AgenticLoadingOverlay } from '../components/AgenticLoadingOverlay';
 import { JobCard } from '../components/JobCard';
 import { jobsAPI } from '../api/client';
 import { Search, MapPin, AlertCircle, X, Loader2, CheckCircle2, Sparkles, Clock } from 'lucide-react';
@@ -16,6 +17,7 @@ export const JobsPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [locationQuery, setLocationQuery] = useState('');
   const [hideSaved, setHideSaved] = useState(false);
+  const [showAllJobs, setShowAllJobs] = useState(false);
   const [loadedCount, setLoadedCount] = useState(0);
   const [pageSize] = useState(25);
   const [totalJobs, setTotalJobs] = useState(0);
@@ -29,6 +31,11 @@ export const JobsPage = () => {
   // Search process tracking
   const [searchSteps, setSearchSteps] = useState<Array<{ step: string, status: 'pending' | 'active' | 'completed' | 'skipped', message?: string }>>([]);
   const [searchSource, setSearchSource] = useState<string>('');
+
+  // CV generation tracking
+  const [generatingCV, setGeneratingCV] = useState(false);
+  const [agentSteps, setAgentSteps] = useState<any[]>([]);
+  const [currentStep, setCurrentStep] = useState<string | undefined>();
 
   // Load jobs function (called manually or when filters change after initial search)
   const loadJobs = async (reset: boolean = true, searchQueryOverride?: string, locationQueryOverride?: string) => {
@@ -47,6 +54,110 @@ export const JobsPage = () => {
 
     try {
       const offset = reset ? 0 : loadedCount;
+
+      // If "Show all jobs" is checked, use vector search if there's a query, otherwise simple search
+      // Note: This mode does NOT use user profile (CV, saved jobs) - it's a general search
+      if (showAllJobs) {
+        if (queryToUse.trim()) {
+          // Use vector/embedding search for better semantic matching (without user profile)
+          setSearchSteps([
+            { step: 'match', status: 'active', message: 'Searching jobs...' }
+          ]);
+
+          try {
+            // Use vector search for semantic similarity (without LLM enhancement that uses user profile)
+            const data = await jobsAPI.searchVector({
+              query: queryToUse.trim(),
+              location: locationToUse.trim() || undefined,
+              hide_saved: hideSaved,
+              limit: pageSize,
+              offset: offset,
+              use_llm_enhancement: false, // Disable LLM enhancement to avoid using user profile
+            });
+            if (reset) {
+              setJobs(data.jobs || []);
+              setLoadedCount(data.jobs?.length || 0);
+            } else {
+              setJobs(prev => [...prev, ...(data.jobs || [])]);
+              setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            }
+            setTotalJobs(data.total || 0);
+            setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} matching jobs` })));
+            setSearchSource('vector_search');
+
+            // Load preparation statuses for saved/applied jobs
+            if (reset) {
+              loadPreparationStatuses(data.jobs || []);
+            }
+          } catch (vectorErr: any) {
+            // Fallback to keyword search if vector search fails
+            console.warn('Vector search failed, falling back to keyword search:', vectorErr);
+            setSearchSteps([
+              { step: 'match', status: 'active', message: 'Searching jobs...' }
+            ]);
+            const searchParams: any = {
+              query: queryToUse.trim(),
+              limit: pageSize,
+              offset: offset,
+              hide_saved: hideSaved
+            };
+
+            if (locationToUse.trim()) {
+              searchParams.location = locationToUse.trim();
+            }
+
+            const data = await jobsAPI.search(searchParams);
+            if (reset) {
+              setJobs(data.jobs || []);
+              setLoadedCount(data.jobs?.length || 0);
+            } else {
+              setJobs(prev => [...prev, ...(data.jobs || [])]);
+              setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            }
+            setTotalJobs(data.total || 0);
+            setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} jobs` })));
+            setSearchSource('keyword_search');
+
+            // Load preparation statuses for saved/applied jobs
+            if (reset) {
+              loadPreparationStatuses(data.jobs || []);
+            }
+          }
+        } else {
+          // No query - just load all jobs
+          setSearchSteps([
+            { step: 'match', status: 'active', message: 'Loading all jobs...' }
+          ]);
+
+          const searchParams: any = {
+            limit: pageSize,
+            offset: offset,
+            hide_saved: hideSaved
+          };
+
+          if (locationToUse.trim()) {
+            searchParams.location = locationToUse.trim();
+          }
+
+          const data = await jobsAPI.search(searchParams);
+          if (reset) {
+            setJobs(data.jobs || []);
+            setLoadedCount(data.jobs?.length || 0);
+          } else {
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+          }
+          setTotalJobs(data.total || 0);
+          setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} jobs` })));
+          setSearchSource('all_jobs');
+
+          // Load preparation statuses for saved/applied jobs
+          if (reset) {
+            loadPreparationStatuses(data.jobs || []);
+          }
+        }
+        return;
+      }
 
       // Use vector similarity search if there's a search query
       // Otherwise use simple keyword search
@@ -247,13 +358,13 @@ export const JobsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload jobs when hideSaved filter changes (only if user has already searched)
+  // Reload jobs when hideSaved or showAllJobs filter changes (only if user has already searched)
   useEffect(() => {
     if (hasSearched) {
       loadJobs(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideSaved]);
+  }, [hideSaved, showAllJobs]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,6 +381,7 @@ export const JobsPage = () => {
     setLocationQuery('');
     setActiveSearchQuery('');
     setActiveLocationQuery('');
+    setShowAllJobs(false);
     setJobs([]);
     setTotalJobs(0);
     setLoadedCount(0);
@@ -289,7 +401,60 @@ export const JobsPage = () => {
       const offset = loadedCount;
 
       // Use the same logic as loadJobs but for loading more
-      if (activeSearchQuery.trim()) {
+      if (showAllJobs) {
+        // Show all jobs - use vector search if there's a query, otherwise simple search
+        // Note: This mode does NOT use user profile (CV, saved jobs) - it's a general search
+        if (activeSearchQuery.trim()) {
+          try {
+            // Use vector search for semantic similarity (without LLM enhancement that uses user profile)
+            const data = await jobsAPI.searchVector({
+              query: activeSearchQuery.trim(),
+              location: activeLocationQuery.trim() || undefined,
+              hide_saved: hideSaved,
+              limit: pageSize,
+              offset: offset,
+              use_llm_enhancement: false, // Disable LLM enhancement to avoid using user profile
+            });
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            setTotalJobs(data.total || 0);
+          } catch (vectorErr: any) {
+            // Fallback to keyword search if vector search fails
+            console.warn('Vector search failed, falling back to keyword search:', vectorErr);
+            const searchParams: any = {
+              query: activeSearchQuery.trim(),
+              limit: pageSize,
+              offset: offset,
+              hide_saved: hideSaved
+            };
+
+            if (activeLocationQuery.trim()) {
+              searchParams.location = activeLocationQuery.trim();
+            }
+
+            const data = await jobsAPI.search(searchParams);
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            setTotalJobs(data.total || 0);
+          }
+        } else {
+          // No query - just load all jobs
+          const searchParams: any = {
+            limit: pageSize,
+            offset: offset,
+            hide_saved: hideSaved
+          };
+
+          if (activeLocationQuery.trim()) {
+            searchParams.location = activeLocationQuery.trim();
+          }
+
+          const data = await jobsAPI.search(searchParams);
+          setJobs(prev => [...prev, ...(data.jobs || [])]);
+          setLoadedCount(prev => prev + (data.jobs?.length || 0));
+          setTotalJobs(data.total || 0);
+        }
+      } else if (activeSearchQuery.trim()) {
         // Has search query - use search
         await loadJobs(false);
       } else {
@@ -455,266 +620,304 @@ export const JobsPage = () => {
   const hasMoreJobs = loadedCount < totalJobs;
 
   return (
-    <Layout>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Browse Jobs</h1>
-          <p className="text-gray-600 mt-1">Search and explore available positions</p>
-        </div>
-
-        <form onSubmit={handleSearch} className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="md:col-span-2 relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search jobs by title, company, or keywords..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div className="relative">
-              <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Location (e.g., New York, Remote)..."
-                value={locationQuery}
-                onChange={(e) => setLocationQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
+    <>
+      <AgenticLoadingOverlay
+        isVisible={generatingCV}
+        operation="generating"
+        agentSteps={agentSteps}
+        currentStep={currentStep}
+        message="Generating your tailored CV with AI agent..."
+      />
+      <Layout>
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Browse Jobs</h1>
+            <p className="text-gray-600 mt-1">Search and explore available positions</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-            <div className="md:col-span-2 flex items-center">
-              <label className="flex items-center gap-2 cursor-pointer">
+
+          <form onSubmit={handleSearch} className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="md:col-span-2 relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
                 <input
-                  type="checkbox"
-                  checked={hideSaved}
-                  onChange={(e) => setHideSaved(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  type="text"
+                  placeholder="Search jobs by title, company, or keywords..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
-                <span className="text-sm text-gray-700">Hide Saved Jobs</span>
-              </label>
+              </div>
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Location (e.g., New York, Remote)..."
+                  value={locationQuery}
+                  onChange={(e) => setLocationQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
             </div>
-            <div className="flex items-center justify-end gap-2">
-              {(searchQuery || locationQuery || hasSearched) && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+              <div className="md:col-span-2 flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={hideSaved}
+                    onChange={(e) => setHideSaved(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Hide Saved Jobs</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showAllJobs}
+                    onChange={(e) => {
+                      setShowAllJobs(e.target.checked);
+                    }}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Show All Jobs</span>
+                </label>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                {(searchQuery || locationQuery || hasSearched || showAllJobs) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleClearSearch();
+                      setShowAllJobs(false);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+                  >
+                    <X className="h-4 w-4" />
+                    Clear
+                  </button>
+                )}
                 <button
-                  type="button"
-                  onClick={handleClearSearch}
-                  className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+                  type="submit"
+                  disabled={loading}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                  <X className="h-4 w-4" />
-                  Clear
+                  <Search className="h-4 w-4" />
+                  {loading ? 'Searching...' : 'Search'}
                 </button>
-              )}
+              </div>
+            </div>
+          </form>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-800">Error loading jobs</p>
+                <p className="text-sm text-red-600 mt-1">{error}</p>
+              </div>
               <button
-                type="submit"
-                disabled={loading}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                onClick={() => setError(null)}
+                className="text-red-600 hover:text-red-800"
               >
-                <Search className="h-4 w-4" />
-                {loading ? 'Searching...' : 'Search'}
+                <X className="h-4 w-4" />
               </button>
             </div>
-          </div>
-        </form>
+          )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-sm font-medium text-red-800">Error loading jobs</p>
-              <p className="text-sm text-red-600 mt-1">{error}</p>
-            </div>
-            <button
-              onClick={() => setError(null)}
-              className="text-red-600 hover:text-red-800"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
+          {/* Search Process Steps Indicator */}
+          {loading && searchSteps.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="h-5 w-5 text-blue-600" />
+                <h3 className="text-sm font-semibold text-blue-900">Matching Process</h3>
+              </div>
+              <div className="space-y-2">
+                {searchSteps.map((step, index) => {
+                  const getIcon = () => {
+                    if (step.status === 'completed') {
+                      return <CheckCircle2 className="h-4 w-4 text-green-600" />;
+                    } else if (step.status === 'active') {
+                      return <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />;
+                    } else if (step.status === 'skipped') {
+                      return <X className="h-4 w-4 text-gray-400" />;
+                    } else {
+                      return <Clock className="h-4 w-4 text-gray-400" />;
+                    }
+                  };
 
-        {/* Search Process Steps Indicator */}
-        {loading && searchSteps.length > 0 && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Sparkles className="h-5 w-5 text-blue-600" />
-              <h3 className="text-sm font-semibold text-blue-900">Matching Process</h3>
-            </div>
-            <div className="space-y-2">
-              {searchSteps.map((step, index) => {
-                const getIcon = () => {
-                  if (step.status === 'completed') {
-                    return <CheckCircle2 className="h-4 w-4 text-green-600" />;
-                  } else if (step.status === 'active') {
-                    return <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />;
-                  } else if (step.status === 'skipped') {
-                    return <X className="h-4 w-4 text-gray-400" />;
-                  } else {
-                    return <Clock className="h-4 w-4 text-gray-400" />;
-                  }
-                };
+                  const getStepLabel = () => {
+                    if (step.step === 'cv') return 'Reading CV';
+                    if (step.step === 'saved') return 'Reading Latest Saved Jobs';
+                    if (step.step === 'ai') return 'AI Analysis';
+                    if (step.step === 'match') return 'Job Matching';
+                    return 'Processing';
+                  };
 
-                const getStepLabel = () => {
-                  if (step.step === 'cv') return 'Reading CV';
-                  if (step.step === 'saved') return 'Reading Latest Saved Jobs';
-                  if (step.step === 'ai') return 'AI Analysis';
-                  if (step.step === 'match') return 'Job Matching';
-                  return 'Processing';
-                };
-
-                return (
-                  <div key={index} className={`flex items-center gap-3 text-sm ${step.status === 'completed' ? 'text-green-700' :
+                  return (
+                    <div key={index} className={`flex items-center gap-3 text-sm ${step.status === 'completed' ? 'text-green-700' :
                       step.status === 'active' ? 'text-blue-700 font-medium' :
                         step.status === 'skipped' ? 'text-gray-500' :
                           'text-gray-600'
-                    }`}>
-                    {getIcon()}
-                    <span className="flex-1">
-                      <span className="font-medium">{getStepLabel()}</span>
-                      {step.message && <span className="ml-2 text-gray-600">- {step.message}</span>}
-                    </span>
-                  </div>
-                );
-              })}
+                      }`}>
+                      {getIcon()}
+                      <span className="flex-1">
+                        <span className="font-medium">{getStepLabel()}</span>
+                        {step.message && <span className="ml-2 text-gray-600">- {step.message}</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Search Source Badge */}
-        {!loading && searchSource && jobs.length > 0 && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-gray-600">Results from:</span>
-            <span className={`px-3 py-1 rounded-full text-xs font-medium ${searchSource === 'cv_matches' || searchSource === 'cv_vector_search'
+          {/* Search Source Badge */}
+          {!loading && searchSource && jobs.length > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-600">Results from:</span>
+              <span className={`px-3 py-1 rounded-full text-xs font-medium ${searchSource === 'cv_matches' || searchSource === 'cv_vector_search'
                 ? 'bg-green-100 text-green-800'
                 : searchSource === 'similar_to_saved'
                   ? 'bg-blue-100 text-blue-800'
                   : searchSource === 'vector_search' || searchSource === 'similar_jobs'
                     ? 'bg-purple-100 text-purple-800'
                     : 'bg-gray-100 text-gray-800'
-              }`}>
-              {searchSource === 'cv_matches' && '📄 CV Profile Matches'}
-              {searchSource === 'cv_vector_search' && '📄 CV-Based Search'}
-              {searchSource === 'similar_to_saved' && '🔖 Similar to Saved Jobs'}
-              {searchSource === 'vector_search' && '🔍 Semantic Search'}
-              {searchSource === 'keyword_search' && '🔎 Keyword Search'}
-              {searchSource === 'similar_jobs' && '✨ Similar Jobs'}
-              {searchSource === 'latest' && '📋 Latest Jobs'}
-              {searchSource === 'fallback' && '📋 All Jobs'}
-            </span>
-          </div>
-        )}
-
-        {loading && searchSteps.length === 0 ? (
-          <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
-            <div className="text-gray-500">Loading jobs...</div>
-          </div>
-        ) : jobs.length === 0 ? (
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-12 text-center">
-            <p className="text-gray-600 mb-2">
-              {activeSearchQuery || activeLocationQuery
-                ? `No jobs found matching your search criteria.`
-                : `No jobs found. Try adjusting your search filters.`}
-            </p>
-            {(activeSearchQuery || activeLocationQuery) && (
-              <button
-                type="button"
-                onClick={handleClearSearch}
-                className="text-blue-600 hover:text-blue-700 text-sm font-medium"
-              >
-                Clear filters and show all jobs
-              </button>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="grid gap-4">
-              {jobs.map((job: any) => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  onApplicationUpdate={handleApplicationUpdate}
-                  onFindSimilar={handleFindSimilar}
-                  preparationStatus={preparationStatuses[job.id]}
-                  onPrepareInterview={async (jobId: string) => {
-                    try {
-                      const result = await applicationsAPI.prepareInterview(jobId);
-                      if (result.redirect_url) {
-                        window.location.href = result.redirect_url;
-                      }
-                    } catch (err: any) {
-                      setError(err.response?.data?.detail || 'Failed to start interview prep');
-                    }
-                  }}
-                  onPrepareCV={async (jobId: string) => {
-                    try {
-                      const result = await applicationsAPI.prepareCV(jobId);
-                      if (result.redirect_url) {
-                        window.location.href = result.redirect_url;
-                      }
-                      // Reload preparation status after generating
-                      const status = await applicationsAPI.getPreparationStatus(jobId);
-                      setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
-                    } catch (err: any) {
-                      setError(err.response?.data?.detail || 'Failed to generate tailored CV');
-                    }
-                  }}
-                  onPrepareCoverLetter={async (jobId: string) => {
-                    try {
-                      const result = await applicationsAPI.prepareCoverLetter(jobId);
-                      if (result.redirect_url) {
-                        window.location.href = result.redirect_url;
-                      }
-                      // Reload preparation status after generating
-                      const status = await applicationsAPI.getPreparationStatus(jobId);
-                      setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
-                    } catch (err: any) {
-                      setError(err.response?.data?.detail || 'Failed to generate cover letter');
-                    }
-                  }}
-                />
-              ))}
+                }`}>
+                {searchSource === 'cv_matches' && '📄 CV Profile Matches'}
+                {searchSource === 'cv_vector_search' && '📄 CV-Based Search'}
+                {searchSource === 'similar_to_saved' && '🔖 Similar to Saved Jobs'}
+                {searchSource === 'vector_search' && '🔍 Semantic Search'}
+                {searchSource === 'keyword_search' && '🔎 Keyword Search'}
+                {searchSource === 'similar_jobs' && '✨ Similar Jobs'}
+                {searchSource === 'latest' && '📋 Latest Jobs'}
+                {searchSource === 'fallback' && '📋 All Jobs'}
+                {searchSource === 'all_jobs' && '📋 All Jobs'}
+              </span>
             </div>
+          )}
 
-            {/* Progress indicator and Load More button */}
-            <div className="border-t border-gray-200 pt-6 space-y-4">
-              <div className="text-sm text-gray-700 text-center">
-                Showing {loadedCount} of {totalJobs} jobs
+          {loading && searchSteps.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+              <div className="text-gray-500">Loading jobs...</div>
+            </div>
+          ) : jobs.length === 0 ? (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-12 text-center">
+              <p className="text-gray-600 mb-2">
+                {activeSearchQuery || activeLocationQuery
+                  ? `No jobs found matching your search criteria.`
+                  : `No jobs found. Try adjusting your search filters.`}
+              </p>
+              {(activeSearchQuery || activeLocationQuery) && (
+                <button
+                  type="button"
+                  onClick={handleClearSearch}
+                  className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+                >
+                  Clear filters and show all jobs
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-4">
+                {jobs.map((job: any) => (
+                  <JobCard
+                    key={job.id}
+                    job={job}
+                    onApplicationUpdate={handleApplicationUpdate}
+                    onFindSimilar={handleFindSimilar}
+                    preparationStatus={preparationStatuses[job.id]}
+                    onPrepareInterview={async (jobId: string) => {
+                      try {
+                        const result = await applicationsAPI.prepareInterview(jobId);
+                        if (result.redirect_url) {
+                          window.location.href = result.redirect_url;
+                        }
+                      } catch (err: any) {
+                        setError(err.response?.data?.detail || 'Failed to start interview prep');
+                      }
+                    }}
+                    onPrepareCV={async (jobId: string) => {
+                      try {
+                        setGeneratingCV(true);
+                        setAgentSteps([]);
+                        setCurrentStep('generating');
+
+                        const result = await applicationsAPI.prepareCV(jobId);
+
+                        // Store agent steps if available - show them before navigation
+                        if (result.agent_steps && result.agent_steps.length > 0) {
+                          setAgentSteps(result.agent_steps);
+                          // Keep overlay visible for a moment to show the steps
+                          await new Promise(resolve => setTimeout(resolve, 2000));
+                        }
+
+                        if (result.redirect_url) {
+                          window.location.href = result.redirect_url;
+                        }
+                        // Reload preparation status after generating
+                        const status = await applicationsAPI.getPreparationStatus(jobId);
+                        setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
+                      } catch (err: any) {
+                        setError(err.response?.data?.detail || 'Failed to generate tailored CV');
+                        setGeneratingCV(false);
+                        setCurrentStep(undefined);
+                      }
+                    }}
+                    onPrepareCoverLetter={async (jobId: string) => {
+                      try {
+                        const result = await applicationsAPI.prepareCoverLetter(jobId);
+                        if (result.redirect_url) {
+                          window.location.href = result.redirect_url;
+                        }
+                        // Reload preparation status after generating
+                        const status = await applicationsAPI.getPreparationStatus(jobId);
+                        setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
+                      } catch (err: any) {
+                        setError(err.response?.data?.detail || 'Failed to generate cover letter');
+                      }
+                    }}
+                  />
+                ))}
               </div>
 
-              {hasMoreJobs && (
-                <div className="flex justify-center">
-                  <button
-                    onClick={handleLoadMore}
-                    disabled={loadingMore}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition font-medium"
-                  >
-                    {loadingMore ? (
-                      <>
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                        Loading...
-                      </>
-                    ) : (
-                      <>
-                        Load More ({totalJobs - loadedCount} remaining)
-                      </>
-                    )}
-                  </button>
+              {/* Progress indicator and Load More button */}
+              <div className="border-t border-gray-200 pt-6 space-y-4">
+                <div className="text-sm text-gray-700 text-center">
+                  Showing {loadedCount} of {totalJobs} jobs
                 </div>
-              )}
 
-              {!hasMoreJobs && totalJobs > 0 && (
-                <div className="text-sm text-gray-500 text-center">
-                  All jobs loaded
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </Layout>
+                {hasMoreJobs && (
+                  <div className="flex justify-center">
+                    <button
+                      onClick={handleLoadMore}
+                      disabled={loadingMore}
+                      className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition font-medium"
+                    >
+                      {loadingMore ? (
+                        <>
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                          Loading...
+                        </>
+                      ) : (
+                        <>
+                          Load More ({totalJobs - loadedCount} remaining)
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {!hasMoreJobs && totalJobs > 0 && (
+                  <div className="text-sm text-gray-500 text-center">
+                    All jobs loaded
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </Layout>
+    </>
   );
 };

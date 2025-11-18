@@ -1,6 +1,6 @@
 """
 Embedding service for generating job description embeddings.
-Supports Ollama and OpenAI embedding models.
+Uses Ollama embedding models.
 """
 import httpx
 from typing import List
@@ -17,11 +17,10 @@ class EmbeddingService:
         self.settings = get_scraper_settings()
         self.base_url = self.settings.ollama_base_url
         self.model = self.settings.ollama_embedding_model
-        self.use_openai = self.settings.use_openai_embeddings
     
     async def generate_embedding(self, text: str) -> List[float]:
         """
-        Generate embedding for a single text.
+        Generate embedding for a single text using Ollama.
         
         Args:
             text: Text to embed
@@ -29,10 +28,7 @@ class EmbeddingService:
         Returns:
             List of floats representing the embedding vector
         """
-        if self.use_openai and self.settings.openai_api_key:
-            return await self._generate_openai_embedding(text)
-        else:
-            return await self._generate_ollama_embedding(text)
+        return await self._generate_ollama_embedding(text)
     
     async def _generate_ollama_embedding(self, text: str) -> List[float]:
         """Generate embedding using Ollama"""
@@ -50,28 +46,6 @@ class EmbeddingService:
                 return data["embedding"]
         except Exception as e:
             logger.error(f"Error generating Ollama embedding: {str(e)}")
-            raise
-    
-    async def _generate_openai_embedding(self, text: str) -> List[float]:
-        """Generate embedding using OpenAI"""
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {self.settings.openai_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.settings.openai_embedding_model,
-                        "input": text
-                    }
-                )
-                response.raise_for_status()
-                data = response.json()
-                return data["data"][0]["embedding"]
-        except Exception as e:
-            logger.error(f"Error generating OpenAI embedding: {str(e)}")
             raise
     
     async def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:

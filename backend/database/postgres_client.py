@@ -18,10 +18,12 @@ class PostgresClient:
     async def connect(self):
         """Create connection pool"""
         if self.pool is None:
+            # Use postgres_db if available, otherwise postgres_database (for compatibility)
+            db_name = self.settings.postgres_db or self.settings.postgres_database
             self.pool = await asyncpg.create_pool(
                 host=self.settings.postgres_host,
                 port=self.settings.postgres_port,
-                database=self.settings.postgres_db,
+                database=db_name,
                 user=self.settings.postgres_user,
                 password=self.settings.postgres_password,
                 min_size=2,

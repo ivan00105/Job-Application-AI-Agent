@@ -1,11 +1,3 @@
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
 node_modules
 dist
 dist-ssr
@@ -14,13 +6,75 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
+
+# Dependencies
+node_modules/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-.env
 venv
 __pycache__
 .venv
+
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/.env.local
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+backend/data/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Data files (generated/temporary)
+# Ignore all files and folders in backend/data except job_schedules.csv
+backend/data/**
+!backend/data/jobs/job_schedules.csv
+
+# Temporary files
+*.tmp
+*.backup
+*.old
+.env.backup
+.env.clean
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+
