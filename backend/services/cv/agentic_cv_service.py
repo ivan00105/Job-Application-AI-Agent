@@ -1752,8 +1752,9 @@ Return complete refined HTML with all issues resolved."""
             ValueError: If PDF generation fails
         """
         # Use the dedicated CV HTML to PDF service
+        # save_debug_files=None will use the keep_cv_files setting from config
         pdf_service = get_cv_html2pdf_service()
-        return await pdf_service.convert_to_pdf(html_content, output_path, save_debug_files=True)
+        return await pdf_service.convert_to_pdf(html_content, output_path, save_debug_files=None)
 
 
 # Singleton instance

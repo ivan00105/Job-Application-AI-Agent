@@ -33,38 +33,46 @@ Before you begin, ensure you have:
    ```
 3. Update `backend/.env` later with these values
 
-### Step 3: Apply Database Migrations
+### Step 3: Apply Database Schema
 
-You can run migrations with the helper script or manually via `psql`.
+Apply the complete database schema using the combined migration file:
 
-**Option A: Using the Python helper script**
+**Option A: Using psql directly (Recommended)**
+```bash
+psql -U job_agent -d job_agent -f backend/migrations/initialised_schema.sql
+```
+
+**Option B: Using the Python helper script**
 ```bash
 cd backend
 python scripts/run_migration.py
 ```
 
-**Option B: Using psql directly**
-```bash
-psql -U job_agent -d job_agent -f backend/migrations/create_initial_schema.sql
-psql -U job_agent -d job_agent -f backend/migrations/add_application_statuses.sql
-psql -U job_agent -d job_agent -f backend/migrations/create_preparation_tables.sql
-psql -U job_agent -d job_agent -f backend/migrations/create_interview_tables_postgres.sql
-```
+The `initialised_schema.sql` file contains all tables and indexes needed for the platform.
 
 ### Step 4: Verify Database
 
-1. Go to **Table Editor** in Supabase dashboard
-2. You should see these tables:
-   - `users`
-   - `cv_profiles`
-   - `jobs`
-   - `job_matches`
-   - `applications`
-   - `interview_questions`
-   - `interview_sessions`
-   - `interview_responses`
-   - `interview_knowledge_base`
-   - `interview_performance_analytics`
+Verify the schema was applied correctly:
+
+```bash
+psql -U job_agent -d job_agent -c '\dt'
+```
+
+You should see these tables:
+- `users`
+- `cv_profiles`
+- `jobs`
+- `agent_memory`
+- `job_matches`
+- `applications`
+- `profile_scoring_cache`
+- `recommended_jobs_cache`
+- `tailored_cvs`
+- `cover_letters`
+- `interview_questions`
+- `interview_sessions`
+- `interview_responses`
+- `interview_performance_analytics`
 
 ---
 
@@ -101,7 +109,7 @@ You should see `(venv)` in your terminal prompt.
 pip install -r requirements.txt
 ```
 
-This installs FastAPI, Supabase client, AI libraries, and other dependencies.
+This installs FastAPI, PostgreSQL client, AI libraries (OpenRouter, Ollama), and other dependencies.
 
 ### Step 4: Configure Environment Variables
 
@@ -120,11 +128,11 @@ Edit `backend/.env` with your actual values:
 # PostgreSQL Configuration (REQUIRED)
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=job_agent
+POSTGRES_DATABASE=job_agent
 POSTGRES_USER=job_agent
 POSTGRES_PASSWORD=your-strong-password
 
-# API Configuration (REQUIRED)
+# Security Configuration (REQUIRED)
 SECRET_KEY=your-super-secret-key-change-this-to-random-string
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_HOURS=24
@@ -133,16 +141,25 @@ ACCESS_TOKEN_EXPIRE_HOURS=24
 HOST=0.0.0.0
 PORT=8000
 
-# AI API Keys (Optional - for interview evaluation)
-OPENAI_API_KEY=sk-...your_key  # For GPT-4 evaluation
-ANTHROPIC_API_KEY=sk-ant-...your_key  # For Claude evaluation
-# Leave blank to use mock evaluation for testing
+# OpenRouter Configuration (REQUIRED for LLM features)
+# Get your API key from: https://openrouter.ai/keys
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=openai/gpt-oss-120b
+
+# Ollama Configuration (REQUIRED for embeddings)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBEDDING_MODEL=bge-m3
+
+# CV Generation Configuration (Optional)
+KEEP_CV_FILES=false  # Set to true to keep CV HTML/PDF files for debugging
 ```
 
 **Important Notes:**
 - Use the PostgreSQL credentials you created in Part 1
 - Generate a secure `SECRET_KEY` (run: `openssl rand -hex 32`)
-- AI keys are optional - the system has mock evaluation for testing without them
+- **OpenRouter API key is required** for CV parsing and LLM features - get it from https://openrouter.ai/keys
+- **Ollama must be running** for embeddings - install from https://ollama.ai and run `ollama pull bge-m3`
+- Set `KEEP_CV_FILES=true` if you want to debug CV generation (files saved to `backend/data/cv`)
 
 ### Step 5: Seed Initial Data
 
@@ -279,8 +296,8 @@ pip install -r requirements.txt
 
 **Problem:** Database connection errors
 ```bash
-# Solution: Check backend/.env has correct Supabase credentials
-# Test connection in Supabase dashboard
+# Solution: Check backend/.env has correct PostgreSQL credentials
+# Test connection: psql -U job_agent -d job_agent -h localhost
 ```
 
 **Problem:** Port 8000 already in use
@@ -323,9 +340,9 @@ npm run dev -- --port 3000
 **Problem:** Migrations fail to apply
 ```bash
 # Solution: Check for existing tables with same names
-# In Supabase SQL Editor, run:
-DROP TABLE IF EXISTS interview_questions CASCADE;
-# Then re-run migration
+# In psql, run:
+psql -U job_agent -d job_agent -c "DROP TABLE IF EXISTS interview_questions CASCADE;"
+# Then re-run: psql -U job_agent -d job_agent -f backend/migrations/initialised_schema.sql
 ```
 
 **Problem:** No test users exist
@@ -385,10 +402,7 @@ job-agent/
 │   └── index.css               # Global styles
 │
 ├── backend/migrations/          # Database migrations
-│   ├── create_initial_schema.sql
-│   ├── add_application_statuses.sql
-│   ├── create_preparation_tables.sql
-│   └── create_interview_tables_postgres.sql ⭐
+│   └── initialised_schema.sql   # Complete database schema (all tables)
 │
 ├── .env                         # Frontend environment variables
 ├── package.json                 # Node dependencies
@@ -405,20 +419,22 @@ job-agent/
 
 ### Current Features (Working Now)
 ✅ User authentication with JWT
-✅ CV upload interface (parsing not implemented yet)
-✅ Job browsing UI (no real data yet)
-✅ **Interview Preparation System** (fully functional!)
+✅ **CV upload and parsing** - PDF/DOCX parsing with LLM extraction
+✅ **Job browsing and search** - Real job data with filtering
+✅ **Job matching** - Vector-based matching with scoring
+✅ **Application tracking** - Full application lifecycle management
+✅ **Interview Preparation System** - Fully functional!
   - IT and Finance domain questions
   - AI-powered evaluation
   - Performance tracking
   - Analytics dashboard
+✅ **Tailored CV generation** - Job-specific CV customization
+✅ **Cover letter generation** - AI-generated cover letters
 
-### Future AI Features (Not Yet Implemented)
-🔄 CV parsing with OCR (PaddleOCR)
-🔄 Job scraping (JobsDB, LinkedIn, Indeed)
-🔄 Vector-based job matching algorithm
-🔄 RAG-powered resume/cover letter generation
-🔄 Semi-automated application filling
+### Future Enhancements
+🔄 Additional job scraping sources
+🔄 Enhanced matching algorithms
+🔄 Advanced application automation
 
 ### Ideas for Enhancement
 
@@ -493,10 +509,7 @@ Use this checklist to track your setup progress:
 ### Database Setup
 - [ ] Installed PostgreSQL locally or provisioned a server
 - [ ] Created `job_agent` database and user
-- [ ] Applied `backend/migrations/create_initial_schema.sql`
-- [ ] Applied `backend/migrations/add_application_statuses.sql`
-- [ ] Applied `backend/migrations/create_preparation_tables.sql`
-- [ ] Applied `backend/migrations/create_interview_tables_postgres.sql`
+- [ ] Applied `backend/migrations/initialised_schema.sql`
 - [ ] Verified tables exist via `\dt` in `psql`
 
 ### Backend Setup
@@ -506,6 +519,8 @@ Use this checklist to track your setup progress:
 - [ ] Created `backend/.env` file
 - [ ] Added PostgreSQL credentials
 - [ ] Generated SECRET_KEY
+- [ ] Added OpenRouter API key
+- [ ] Installed and started Ollama
 - [ ] Created test users
 - [ ] Seeded interview questions
 - [ ] Started backend server successfully
@@ -520,9 +535,10 @@ Use this checklist to track your setup progress:
 - [ ] Logged in successfully
 - [ ] Tested interview prep feature
 
-### Optional (AI Features)
-- [ ] Added OPENAI_API_KEY or ANTHROPIC_API_KEY
-- [ ] Tested real AI evaluation
+### Optional Configuration
+- [ ] Set KEEP_CV_FILES=true for debugging
+- [ ] Configured Qdrant for vector search (if using)
+- [ ] Tested CV parsing with real PDF/DOCX files
 
 ---
 

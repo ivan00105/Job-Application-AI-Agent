@@ -25,9 +25,7 @@ class Settings(BaseSettings):
     access_token_expire_hours: int = 24
 
     # AI API Keys (optional for now)
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    groq_api_key: str = ""
+    # Note: OpenAI/Anthropic/Groq keys removed - using OpenRouter for all LLM calls
 
     # Server
     host: str = "0.0.0.0"
@@ -71,6 +69,7 @@ class Settings(BaseSettings):
     
     # CV Generation Configuration
     use_agentic_cv_generation: bool = True  # Use agentic multi-step reasoning for CV generation
+    keep_cv_files: bool = False  # Whether to keep CV HTML and PDF files in data/cv folder (default: False, files are cleaned up after use)
 
     # Scraping Configuration
     scrape_sites: str = '["indeed", "linkedin", "google"]'
@@ -80,6 +79,7 @@ class Settings(BaseSettings):
     # Processing Configuration
     batch_size: int = 10
     enable_duplicate_detection: bool = True
+    save_jobs_csv: bool = True  # Enable/disable saving job scraping results to CSV files in backend/data/jobs
 
     class Config:
         env_file = ".env"

@@ -35,10 +35,9 @@ logs/
 backend/data/logs/
 
 # Data files (generated/temporary)
-backend/data/cv/*.html
-backend/data/cv/*.pdf
-backend/data/jobs/jobs_*.csv
-backend/data/jobs/*_not_saved.csv
+# Ignore all files and folders in backend/data except job_schedules.csv
+backend/data/**
+!backend/data/jobs/job_schedules.csv
 
 # Temporary files
 *.tmp

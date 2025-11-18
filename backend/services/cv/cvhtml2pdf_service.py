@@ -12,12 +12,18 @@ import json
 import base64
 import tempfile
 import sys
+import os
 import subprocess
 import platform
 import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Tuple
+
+try:
+    from config import get_settings
+except ImportError:
+    from backend.config import get_settings
 
 
 class CVHTML2PDFService:
@@ -27,6 +33,8 @@ class CVHTML2PDFService:
     
     def __init__(self):
         """Initialize the service."""
+        # Get settings
+        self.settings = get_settings()
         # Get the data/cv directory path
         self.data_cv_dir = Path(__file__).parent.parent.parent / 'data' / 'cv'
         self.data_cv_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +116,7 @@ class CVHTML2PDFService:
                 # Remove preview-specific margins (page separation in editor)
                 container_content = re.sub(r'margin:\s*0\s+auto\s+40px\s+auto[^;]*;?', '', container_content, flags=re.IGNORECASE)
                 # Ensure width matches CVEditor: 210mm
-                if 'width:\s*210mm' not in container_content.lower() and 'width:\s*198mm' not in container_content.lower():
+                if not re.search(r'width:\s*210mm', container_content, re.IGNORECASE) and not re.search(r'width:\s*198mm', container_content, re.IGNORECASE):
                     # Only set if width is not already set to 210mm or 198mm
                     if 'width:' not in container_content.lower():
                         container_content = container_content.replace('{', '{ width: 210mm; ', 1)
@@ -157,7 +165,8 @@ class CVHTML2PDFService:
     
     def _save_html_file(self, html_content: str, prefix: str = 'cv_export') -> Tuple[Path, str]:
         """
-        Save HTML content to a file in data/cv folder.
+        Save HTML content to a file in data/cv folder (only if keep_cv_files is True).
+        Otherwise, saves to a temporary file that will be cleaned up.
         
         Args:
             html_content: HTML content to save
@@ -167,7 +176,13 @@ class CVHTML2PDFService:
             Tuple of (file_path, timestamp)
         """
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-        html_file_path = self.data_cv_dir / f'{prefix}_{timestamp}.html'
+        
+        # If keep_cv_files is False, use temp directory; otherwise use data/cv
+        if self.settings.keep_cv_files:
+            html_file_path = self.data_cv_dir / f'{prefix}_{timestamp}.html'
+        else:
+            # Use temp directory for files that will be cleaned up
+            html_file_path = Path(tempfile.gettempdir()) / f'{prefix}_{timestamp}.html'
         
         try:
             with open(html_file_path, 'w', encoding='utf-8') as f:
@@ -274,21 +289,48 @@ except Exception as e:
     
     def _run_subprocess_windows(self, script_path: str) -> Tuple[int, bytes, bytes]:
         """Run subprocess on Windows using subprocess.run in a thread."""
+        # Isolate subprocess to prevent importing main application modules
+        # This prevents issues with asyncpg and other modules during hot reload
+        env = os.environ.copy()
+        # Remove project directory from PYTHONPATH to prevent importing main app
+        # but preserve system paths for playwright and other packages
+        pythonpath = env.get('PYTHONPATH', '')
+        if pythonpath:
+            # Filter out project directories from PYTHONPATH
+            project_root = Path(__file__).parent.parent.parent
+            paths = [p for p in pythonpath.split(os.pathsep) 
+                    if p and Path(p).resolve() != project_root.resolve()]
+            env['PYTHONPATH'] = os.pathsep.join(paths) if paths else ''
         result = subprocess.run(
             [sys.executable, script_path],
             capture_output=True,
             timeout=120,
-            text=False
+            text=False,
+            env=env,
+            cwd=tempfile.gettempdir()  # Run from temp directory to avoid importing from project
         )
         return result.returncode, result.stdout or b"", result.stderr or b""
     
     async def _run_subprocess_unix(self, script_path: str) -> Tuple[int, bytes, bytes]:
         """Run subprocess on Unix-like systems using asyncio."""
+        # Isolate subprocess to prevent importing main application modules
+        env = os.environ.copy()
+        # Remove project directory from PYTHONPATH to prevent importing main app
+        # but preserve system paths for playwright and other packages
+        pythonpath = env.get('PYTHONPATH', '')
+        if pythonpath:
+            # Filter out project directories from PYTHONPATH
+            project_root = Path(__file__).parent.parent.parent
+            paths = [p for p in pythonpath.split(os.pathsep) 
+                    if p and Path(p).resolve() != project_root.resolve()]
+            env['PYTHONPATH'] = os.pathsep.join(paths) if paths else ''
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             script_path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=tempfile.gettempdir()  # Run from temp directory to avoid importing from project
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
         return process.returncode, stdout or b"", stderr or b""
@@ -332,7 +374,7 @@ except Exception as e:
         self, 
         html_content: str, 
         output_path: Optional[str] = None,
-        save_debug_files: bool = True
+        save_debug_files: Optional[bool] = None
     ) -> Optional[bytes]:
         """
         Convert HTML to PDF using Playwright in a subprocess.
@@ -340,7 +382,8 @@ except Exception as e:
         Args:
             html_content: HTML content to convert
             output_path: Optional path to save PDF
-            save_debug_files: Whether to save HTML and PDF files to data/cv for debugging
+            save_debug_files: Whether to save HTML and PDF files for debugging.
+                            If None, uses keep_cv_files setting from config.
             
         Returns:
             PDF bytes, or None if conversion failed
@@ -348,6 +391,10 @@ except Exception as e:
         Raises:
             ValueError: If PDF generation fails
         """
+        # Use setting as default if not specified
+        if save_debug_files is None:
+            save_debug_files = self.settings.keep_cv_files
+        
         # Prepare and save HTML content
         # Add a unique identifier to ensure fresh content (prevents any caching)
         import uuid
@@ -358,6 +405,9 @@ except Exception as e:
             html_content = html_content.replace('<head>', f'<head><!-- PDF Export ID: {unique_id} - {datetime.now().isoformat()} -->', 1)
         html_file_path, timestamp = self._save_html_file(html_content, 'cv_export')
         print(f"[PDF] Generated unique export ID: {unique_id}, saved HTML to: {html_file_path.name}")
+        
+        # Initialize pdf_file_path for cleanup
+        pdf_file_path = None
         
         # Escape file path for use in script
         html_file_path_str = str(html_file_path.absolute()).replace('\\', '\\\\')
@@ -387,8 +437,8 @@ except Exception as e:
                     with open(output_path, 'wb') as f:
                         f.write(pdf_bytes)
                 
-                # Save debug PDF if requested
-                if save_debug_files:
+                # Save debug PDF only if keep_cv_files is True
+                if save_debug_files and self.settings.keep_cv_files:
                     pdf_file_path = self.data_cv_dir / f'cv_export_{timestamp}.pdf'
                     try:
                         with open(pdf_file_path, 'wb') as f:
@@ -404,6 +454,18 @@ except Exception as e:
                     Path(script_path).unlink()
                 except Exception:
                     pass
+                # Clean up HTML file if keep_cv_files is False
+                if not self.settings.keep_cv_files and html_file_path.exists():
+                    try:
+                        html_file_path.unlink()
+                    except Exception as e:
+                        print(f"Warning: Failed to clean up HTML file {html_file_path}: {e}")
+                # Clean up PDF file if it was saved but keep_cv_files is False
+                if pdf_file_path and pdf_file_path.exists() and not self.settings.keep_cv_files:
+                    try:
+                        pdf_file_path.unlink()
+                    except Exception as e:
+                        print(f"Warning: Failed to clean up PDF file {pdf_file_path}: {e}")
                     
         except asyncio.TimeoutError:
             raise ValueError("playwright PDF generation timed out after 2 minutes")
@@ -419,7 +481,7 @@ except Exception as e:
         self, 
         html_content: str, 
         output_path: Optional[str] = None,
-        save_debug_files: bool = True
+        save_debug_files: Optional[bool] = None
     ) -> Optional[bytes]:
         """
         Convert HTML to PDF using xhtml2pdf (pure Python fallback).
@@ -427,7 +489,8 @@ except Exception as e:
         Args:
             html_content: HTML content to convert
             output_path: Optional path to save PDF
-            save_debug_files: Whether to save HTML and PDF files to data/cv for debugging
+            save_debug_files: Whether to save HTML and PDF files for debugging.
+                            If None, uses keep_cv_files setting from config.
             
         Returns:
             PDF bytes, or None if conversion failed
@@ -435,6 +498,10 @@ except Exception as e:
         Raises:
             ValueError: If PDF generation fails
         """
+        # Use setting as default if not specified
+        if save_debug_files is None:
+            save_debug_files = self.settings.keep_cv_files
+        
         try:
             from xhtml2pdf import pisa
             from io import BytesIO
@@ -448,6 +515,8 @@ except Exception as e:
         html_content = self._post_process_html_for_xhtml2pdf(html_content)
         
         # Save HTML to file for debugging
+        html_file_path = None
+        timestamp = None
         if save_debug_files:
             html_file_path, timestamp = self._save_html_file(html_content, 'cv_export_xhtml2pdf')
         
@@ -470,8 +539,9 @@ except Exception as e:
                 with open(output_path, 'wb') as f:
                     f.write(pdf_bytes)
             
-            # Save debug PDF if requested
-            if save_debug_files:
+            # Save debug PDF only if keep_cv_files is True
+            pdf_file_path = None
+            if save_debug_files and self.settings.keep_cv_files:
                 pdf_file_path = self.data_cv_dir / f'cv_export_xhtml2pdf_{timestamp}.pdf'
                 try:
                     with open(pdf_file_path, 'wb') as f:
@@ -485,7 +555,26 @@ except Exception as e:
             error_msg = str(e)
             if "xhtml2pdf" not in error_msg.lower() and "pisa" not in error_msg.lower():
                 error_msg = f"xhtml2pdf error: {error_msg}"
+            # Clean up HTML file if keep_cv_files is False
+            if not self.settings.keep_cv_files and html_file_path and html_file_path.exists():
+                try:
+                    html_file_path.unlink()
+                except Exception:
+                    pass
             raise ValueError(error_msg)
+        finally:
+            # Clean up HTML file if keep_cv_files is False (in case of successful conversion)
+            if not self.settings.keep_cv_files and html_file_path and html_file_path.exists():
+                try:
+                    html_file_path.unlink()
+                except Exception as e:
+                    print(f"Warning: Failed to clean up HTML file {html_file_path}: {e}")
+            # Clean up PDF file if it was saved but keep_cv_files is False
+            if pdf_file_path and pdf_file_path.exists() and not self.settings.keep_cv_files:
+                try:
+                    pdf_file_path.unlink()
+                except Exception as e:
+                    print(f"Warning: Failed to clean up PDF file {pdf_file_path}: {e}")
     
     def _post_process_html_for_xhtml2pdf(self, html_content: str) -> str:
         """
@@ -513,7 +602,7 @@ except Exception as e:
         self, 
         html_content: str, 
         output_path: Optional[str] = None,
-        save_debug_files: bool = True
+        save_debug_files: Optional[bool] = None
     ) -> Optional[bytes]:
         """
         Convert HTML to PDF using multiple methods in order of quality:
@@ -523,7 +612,8 @@ except Exception as e:
         Args:
             html_content: HTML content to convert
             output_path: Optional path to save PDF
-            save_debug_files: Whether to save HTML and PDF files to data/cv for debugging
+            save_debug_files: Whether to save HTML and PDF files for debugging.
+                            If None, uses keep_cv_files setting from config.
             
         Returns:
             PDF bytes, or None if conversion failed

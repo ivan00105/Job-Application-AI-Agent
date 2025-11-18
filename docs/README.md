@@ -6,18 +6,10 @@ AI-powered job search and application automation system.
 
 **Essential Reading:**
 - [LOCAL_SETUP_GUIDE.md](LOCAL_SETUP_GUIDE.md) - Complete setup instructions for first-time users
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Quick reference for making changes (read this before coding!)
-- [CONFIGURATION_SUMMARY.md](CONFIGURATION_SUMMARY.md) - Current deployment configuration
 
-**Deployment & Configuration:**
-- [DEPLOYMENT_CONFIG.md](DEPLOYMENT_CONFIG.md) - Production deployment guide
-- [REVERSE_PROXY_SETUP.md](REVERSE_PROXY_SETUP.md) - Reverse proxy setup
-- [TESTING_GUIDE.md](TESTING_GUIDE.md) - Testing and verification
-
-**Additional Resources:**
-- [backend/README.md](backend/README.md) - Backend API reference and structure
-- [FEATURE_IDEAS.md](FEATURE_IDEAS.md) - Roadmap and planned features
-- [docs/README.md](docs/README.md) - Complete documentation index
+**Configuration Examples:**
+- `nginx.conf.example` - Nginx reverse proxy configuration example
+- `Caddyfile.example` - Caddy reverse proxy configuration example
 
 ## Project Structure
 
@@ -39,9 +31,12 @@ AI-powered job search and application automation system.
 
 ### 1. Database Setup
 
-The database schema is already created in Supabase. Make sure you have:
-- Supabase project URL
-- Supabase anon key
+Set up PostgreSQL database and apply the schema:
+
+1. Install PostgreSQL 15+ locally or use a remote server
+2. Create a database and user
+3. Apply the schema using `backend/migrations/initialised_schema.sql`
+4. Configure connection in `backend/.env`
 
 ### 2. Backend Setup
 
@@ -55,9 +50,15 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Install and start Ollama (required for embeddings)
+# Download from https://ollama.ai, then run:
+ollama pull bge-m3
+
 # Configure environment
 cp .env.example .env
-# Edit .env and add your Supabase credentials
+# Edit .env and add:
+# - PostgreSQL credentials
+# - OpenRouter API key (get from https://openrouter.ai/keys)
 
 # Create test users
 python scripts/create_test_users.py
@@ -90,26 +91,30 @@ After running the test user script:
 
 ## Features
 
-### Current (Foundation)
+### Current Features
 - ✅ User authentication (JWT)
-- ✅ CV upload interface
-- ✅ Job listing browse
+- ✅ CV upload and parsing (PDF/DOCX with LLM extraction)
+- ✅ Job listing browse and search
 - ✅ Job matching interface
+- ✅ Application tracking
+- ✅ Interview preparation system
+- ✅ Tailored CV generation
+- ✅ Cover letter generation
 - ✅ Responsive UI with Tailwind CSS
 
-### Coming Soon (AI Phase)
-- 🔄 CV parsing with OCR
-- 🔄 RAG-powered document generation
-- 🔄 Intelligent job matching algorithm
-- 🔄 Job scraping from multiple sources
-- 🔄 Semi-automated application filling
+### Coming Soon
+- 🔄 Enhanced job matching algorithm
+- 🔄 Additional job scraping sources
+- 🔄 Advanced application automation
 
 ## Development
 
 ### Backend
 - FastAPI with async support
 - JWT authentication
-- Supabase PostgreSQL + pgvector
+- PostgreSQL database
+- OpenRouter for LLM calls
+- Ollama for embeddings
 - Auto-generated API docs
 
 ### Frontend
@@ -148,13 +153,12 @@ The CV parser uses OpenRouter/Ollama to extract structured data from PDF/DOCX fi
 
 See `backend/services/cv/parser_service.py` for the full template used by the LLM.
 
-## Next Steps
+## Technology Stack
 
-1. Implement CV parser with OCR (PaddleOCR/EasyOCR)
-2. Build job matching algorithm with vector similarity
-3. Create RAG system for document generation
-4. Add job scrapers for real data
-5. Implement application automation
+- **Backend:** FastAPI, PostgreSQL, OpenRouter (LLM), Ollama (Embeddings)
+- **Frontend:** React 18, TypeScript, Tailwind CSS
+- **AI Services:** OpenRouter API, Ollama (local embeddings)
+- **Database:** PostgreSQL with Qdrant for vector search
 
 ## License
 
