@@ -90,7 +90,8 @@ Guidelines:
 4. Keep the enhanced query focused and relevant to the original intent
 5. Don't add unrelated terms - stay true to the user's search intent
 6. Make it suitable for semantic/vector search (natural language, not keywords)
-7. Return ONLY the enhanced query, no explanations or additional text
+7. When candidate profile context is provided, integrate their qualifications, seniority, industries, locations, unique skills, and explicit years of experience or tenure information that appear in the context. Do not invent details that are not in the context.
+8. Return ONLY the enhanced query, no explanations or additional text
 
 Examples:
 - "Python developer" → "Python developer software engineer programming Python Django Flask FastAPI backend development"
@@ -102,9 +103,14 @@ Examples:
         user_prompt = f"""Original query: {user_query}
 
 Please enhance this query for better job search results. Expand it with relevant terms, synonyms, and related job titles while maintaining the core intent."""
-        
+
         if context:
-            user_prompt += f"\n\nContext: {context}"
+            user_prompt += (
+                "\n\nCandidate profile context:\n"
+                f"{context}\n"
+                "Incorporate the candidate's documented qualifications, years of experience, career level, and skills "
+                "above so the enhanced query reflects their background while still targeting the original intent."
+            )
         
         request_data = {
             "model": self.model,

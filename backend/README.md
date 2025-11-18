@@ -18,7 +18,7 @@ pip install -r requirements.txt
 3. **Configure environment:**
 ```bash
 cp .env.example .env
-# Edit .env and add your Supabase credentials
+# Edit .env and add your PostgreSQL credentials
 ```
 
 4. **Run development server:**
@@ -48,7 +48,7 @@ backend/
 │   ├── cv.py
 │   └── job.py
 ├── database/           # Database connections
-│   └── supabase_client.py
+│   └── postgres_client.py
 └── services/           # Business logic (AI will go here)
 ```
 

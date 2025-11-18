@@ -1,0 +1,44 @@
+# Caddy Reverse Proxy Configuration Example
+# Caddy automatically handles HTTPS with Let's Encrypt certificates
+# Install: https://caddyserver.com/docs/install
+
+# Replace 'your-domain.com' with your actual domain
+# For IP-based access, use: http://YOUR_IP
+
+your-domain.com {
+    # Reverse proxy for backend API
+    reverse_proxy /api localhost:8000 {
+        # Forward proxy headers
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+    }
+
+    # Serve frontend static files
+    root * /path/to/your/frontend/dist
+    try_files {path} /index.html
+    file_server
+
+    # Enable compression
+    encode gzip zstd
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+    }
+
+    # File upload size limit
+    request_body_max_size 50MB
+}
+
+# For development/testing without domain (HTTP only)
+# localhost:8080 {
+#     reverse_proxy /api localhost:8000
+#     root * /path/to/your/frontend/dist
+#     try_files {path} /index.html
+#     file_server
+# }
+

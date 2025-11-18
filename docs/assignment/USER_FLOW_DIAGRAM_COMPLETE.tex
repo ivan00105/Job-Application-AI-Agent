@@ -1,0 +1,79 @@
+% Complete User Flow Diagram - Tested and Working
+% Requires: \usepackage{tikz}
+% If you get errors, also add: \usetikzlibrary{shapes,arrows,positioning}
+
+\documentclass{article}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,shapes.geometric}
+
+\begin{document}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance = 1cm and 1.5cm,
+    auto,
+    % Styles
+    startstop/.style = {
+        rectangle, rounded corners = 3pt,
+        minimum width = 2.5cm, minimum height = 0.8cm,
+        text centered, draw = black, fill = blue!20
+    },
+    process/.style = {
+        rectangle,
+        minimum width = 2.5cm, minimum height = 0.8cm,
+        text centered, draw = black, fill = yellow!20
+    },
+    decision/.style = {
+        diamond, aspect = 2,
+        minimum width = 2cm, minimum height = 0.8cm,
+        text centered, draw = black, fill = green!20
+    },
+    io/.style = {
+        trapezium, trapezium stretches body,
+        trapezium left angle = 70, trapezium right angle = 110,
+        minimum width = 2.5cm, minimum height = 0.8cm,
+        text centered, draw = black, fill = orange!20
+    },
+    arrow/.style = {->, >=stealth}
+]
+
+    % Define nodes
+    \node [startstop] (start) {Start};
+    \node [io, below = of start] (upload) {Upload CV};
+    \node [process, below = of upload] (parse) {Parse CV};
+    \node [io, below = of parse] (search) {Search Jobs};
+    \node [process, below = of search] (matches) {View Matches};
+    \node [decision, below = of matches] (select) {Select Job?};
+    \node [process, below = of select] (generate) {Generate CV};
+    \node [decision, below = of generate] (review) {Approve?};
+    \node [process, left = 2.5cm of review] (edit) {Edit CV};
+    \node [decision, below = of review] (interview) {Interview Prep?};
+    \node [process, right = 2.5cm of interview] (prep) {AI Prep};
+    \node [io, below = of interview] (apply) {Apply};
+    \node [startstop, below = of apply] (end) {End};
+    
+    % Draw arrows
+    \draw [arrow] (start) -- (upload);
+    \draw [arrow] (upload) -- (parse);
+    \draw [arrow] (parse) -- (search);
+    \draw [arrow] (search) -- (matches);
+    \draw [arrow] (matches) -- (select);
+    \draw [arrow] (select) -- node [right] {Yes} (generate);
+    \draw [arrow] (select) -| node [near start, above] {No} (search);
+    \draw [arrow] (generate) -- (review);
+    \draw [arrow] (review) -- node [right] {Yes} (interview);
+    \draw [arrow] (review) -- node [above] {No} (edit);
+    \draw [arrow] (edit) |- (review);
+    \draw [arrow] (interview) -- node [right] {No} (apply);
+    \draw [arrow] (interview) -- node [above] {Yes} (prep);
+    \draw [arrow] (prep) |- (apply);
+    \draw [arrow] (apply) -- (end);
+    
+\end{tikzpicture}
+\caption{User Flow Diagram: Job Application Process}
+\label{fig:user_flow}
+\end{figure}
+
+\end{document}
+

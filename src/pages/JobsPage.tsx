@@ -3,6 +3,7 @@
  */
 import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
+import { AgenticLoadingOverlay } from '../components/AgenticLoadingOverlay';
 import { JobCard } from '../components/JobCard';
 import { jobsAPI } from '../api/client';
 import { Search, MapPin, AlertCircle, X, Loader2, CheckCircle2, Sparkles, Clock } from 'lucide-react';
@@ -16,6 +17,7 @@ export const JobsPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [locationQuery, setLocationQuery] = useState('');
   const [hideSaved, setHideSaved] = useState(false);
+  const [showAllJobs, setShowAllJobs] = useState(false);
   const [loadedCount, setLoadedCount] = useState(0);
   const [pageSize] = useState(25);
   const [totalJobs, setTotalJobs] = useState(0);
@@ -29,6 +31,11 @@ export const JobsPage = () => {
   // Search process tracking
   const [searchSteps, setSearchSteps] = useState<Array<{step: string, status: 'pending' | 'active' | 'completed' | 'skipped', message?: string}>>([]);
   const [searchSource, setSearchSource] = useState<string>('');
+  
+  // CV generation tracking
+  const [generatingCV, setGeneratingCV] = useState(false);
+  const [agentSteps, setAgentSteps] = useState<any[]>([]);
+  const [currentStep, setCurrentStep] = useState<string | undefined>();
 
   // Load jobs function (called manually or when filters change after initial search)
   const loadJobs = async (reset: boolean = true, searchQueryOverride?: string, locationQueryOverride?: string) => {
@@ -47,6 +54,110 @@ export const JobsPage = () => {
     
     try {
       const offset = reset ? 0 : loadedCount;
+      
+      // If "Show all jobs" is checked, use vector search if there's a query, otherwise simple search
+      // Note: This mode does NOT use user profile (CV, saved jobs) - it's a general search
+      if (showAllJobs) {
+        if (queryToUse.trim()) {
+          // Use vector/embedding search for better semantic matching (without user profile)
+          setSearchSteps([
+            { step: 'match', status: 'active', message: 'Searching jobs...' }
+          ]);
+          
+          try {
+            // Use vector search for semantic similarity (without LLM enhancement that uses user profile)
+            const data = await jobsAPI.searchVector({
+              query: queryToUse.trim(),
+              location: locationToUse.trim() || undefined,
+              hide_saved: hideSaved,
+              limit: pageSize,
+              offset: offset,
+              use_llm_enhancement: false, // Disable LLM enhancement to avoid using user profile
+            });
+            if (reset) {
+              setJobs(data.jobs || []);
+              setLoadedCount(data.jobs?.length || 0);
+            } else {
+              setJobs(prev => [...prev, ...(data.jobs || [])]);
+              setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            }
+            setTotalJobs(data.total || 0);
+            setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} matching jobs` })));
+            setSearchSource('vector_search');
+            
+            // Load preparation statuses for saved/applied jobs
+            if (reset) {
+              loadPreparationStatuses(data.jobs || []);
+            }
+          } catch (vectorErr: any) {
+            // Fallback to keyword search if vector search fails
+            console.warn('Vector search failed, falling back to keyword search:', vectorErr);
+            setSearchSteps([
+              { step: 'match', status: 'active', message: 'Searching jobs...' }
+            ]);
+            const searchParams: any = {
+              query: queryToUse.trim(),
+              limit: pageSize,
+              offset: offset,
+              hide_saved: hideSaved
+            };
+            
+            if (locationToUse.trim()) {
+              searchParams.location = locationToUse.trim();
+            }
+
+            const data = await jobsAPI.search(searchParams);
+            if (reset) {
+              setJobs(data.jobs || []);
+              setLoadedCount(data.jobs?.length || 0);
+            } else {
+              setJobs(prev => [...prev, ...(data.jobs || [])]);
+              setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            }
+            setTotalJobs(data.total || 0);
+            setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} jobs` })));
+            setSearchSource('keyword_search');
+            
+            // Load preparation statuses for saved/applied jobs
+            if (reset) {
+              loadPreparationStatuses(data.jobs || []);
+            }
+          }
+        } else {
+          // No query - just load all jobs
+          setSearchSteps([
+            { step: 'match', status: 'active', message: 'Loading all jobs...' }
+          ]);
+          
+          const searchParams: any = {
+            limit: pageSize,
+            offset: offset,
+            hide_saved: hideSaved
+          };
+          
+          if (locationToUse.trim()) {
+            searchParams.location = locationToUse.trim();
+          }
+
+          const data = await jobsAPI.search(searchParams);
+          if (reset) {
+            setJobs(data.jobs || []);
+            setLoadedCount(data.jobs?.length || 0);
+          } else {
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+          }
+          setTotalJobs(data.total || 0);
+          setSearchSteps(prev => prev.map(s => ({ ...s, status: 'completed' as const, message: `Found ${data.total || 0} jobs` })));
+          setSearchSource('all_jobs');
+          
+          // Load preparation statuses for saved/applied jobs
+          if (reset) {
+            loadPreparationStatuses(data.jobs || []);
+          }
+        }
+        return;
+      }
       
       // Use vector similarity search if there's a search query
       // Otherwise use simple keyword search
@@ -247,13 +358,13 @@ export const JobsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload jobs when hideSaved filter changes (only if user has already searched)
+  // Reload jobs when hideSaved or showAllJobs filter changes (only if user has already searched)
   useEffect(() => {
     if (hasSearched) {
       loadJobs(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideSaved]);
+  }, [hideSaved, showAllJobs]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,6 +381,7 @@ export const JobsPage = () => {
     setLocationQuery('');
     setActiveSearchQuery('');
     setActiveLocationQuery('');
+    setShowAllJobs(false);
     setJobs([]);
     setTotalJobs(0);
     setLoadedCount(0);
@@ -289,7 +401,60 @@ export const JobsPage = () => {
       const offset = loadedCount;
       
       // Use the same logic as loadJobs but for loading more
-      if (activeSearchQuery.trim()) {
+      if (showAllJobs) {
+        // Show all jobs - use vector search if there's a query, otherwise simple search
+        // Note: This mode does NOT use user profile (CV, saved jobs) - it's a general search
+        if (activeSearchQuery.trim()) {
+          try {
+            // Use vector search for semantic similarity (without LLM enhancement that uses user profile)
+            const data = await jobsAPI.searchVector({
+              query: activeSearchQuery.trim(),
+              location: activeLocationQuery.trim() || undefined,
+              hide_saved: hideSaved,
+              limit: pageSize,
+              offset: offset,
+              use_llm_enhancement: false, // Disable LLM enhancement to avoid using user profile
+            });
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            setTotalJobs(data.total || 0);
+          } catch (vectorErr: any) {
+            // Fallback to keyword search if vector search fails
+            console.warn('Vector search failed, falling back to keyword search:', vectorErr);
+            const searchParams: any = {
+              query: activeSearchQuery.trim(),
+              limit: pageSize,
+              offset: offset,
+              hide_saved: hideSaved
+            };
+            
+            if (activeLocationQuery.trim()) {
+              searchParams.location = activeLocationQuery.trim();
+            }
+
+            const data = await jobsAPI.search(searchParams);
+            setJobs(prev => [...prev, ...(data.jobs || [])]);
+            setLoadedCount(prev => prev + (data.jobs?.length || 0));
+            setTotalJobs(data.total || 0);
+          }
+        } else {
+          // No query - just load all jobs
+          const searchParams: any = {
+            limit: pageSize,
+            offset: offset,
+            hide_saved: hideSaved
+          };
+          
+          if (activeLocationQuery.trim()) {
+            searchParams.location = activeLocationQuery.trim();
+          }
+
+          const data = await jobsAPI.search(searchParams);
+          setJobs(prev => [...prev, ...(data.jobs || [])]);
+          setLoadedCount(prev => prev + (data.jobs?.length || 0));
+          setTotalJobs(data.total || 0);
+        }
+      } else if (activeSearchQuery.trim()) {
         // Has search query - use search
         await loadJobs(false);
       } else {
@@ -455,6 +620,14 @@ export const JobsPage = () => {
   const hasMoreJobs = loadedCount < totalJobs;
 
   return (
+    <>
+      <AgenticLoadingOverlay
+        isVisible={generatingCV}
+        operation="generating"
+        agentSteps={agentSteps}
+        currentStep={currentStep}
+        message="Generating your tailored CV with AI agent..."
+      />
     <Layout>
       <div className="space-y-6">
         <div>
@@ -486,7 +659,7 @@ export const JobsPage = () => {
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-            <div className="md:col-span-2 flex items-center">
+            <div className="md:col-span-2 flex items-center gap-4">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -496,12 +669,26 @@ export const JobsPage = () => {
                 />
                 <span className="text-sm text-gray-700">Hide Saved Jobs</span>
               </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showAllJobs}
+                  onChange={(e) => {
+                    setShowAllJobs(e.target.checked);
+                  }}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-700">Show All Jobs</span>
+              </label>
             </div>
             <div className="flex items-center justify-end gap-2">
-              {(searchQuery || locationQuery || hasSearched) && (
+              {(searchQuery || locationQuery || hasSearched || showAllJobs) && (
                 <button
                   type="button"
-                  onClick={handleClearSearch}
+                  onClick={() => {
+                    handleClearSearch();
+                    setShowAllJobs(false);
+                  }}
                   className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
                 >
                   <X className="h-4 w-4" />
@@ -605,6 +792,7 @@ export const JobsPage = () => {
               {searchSource === 'similar_jobs' && '✨ Similar Jobs'}
               {searchSource === 'latest' && '📋 Latest Jobs'}
               {searchSource === 'fallback' && '📋 All Jobs'}
+              {searchSource === 'all_jobs' && '📋 All Jobs'}
             </span>
           </div>
         )}
@@ -653,7 +841,19 @@ export const JobsPage = () => {
                   }}
                   onPrepareCV={async (jobId: string) => {
                     try {
+                      setGeneratingCV(true);
+                      setAgentSteps([]);
+                      setCurrentStep('generating');
+                      
                       const result = await applicationsAPI.prepareCV(jobId);
+                      
+                      // Store agent steps if available - show them before navigation
+                      if (result.agent_steps && result.agent_steps.length > 0) {
+                        setAgentSteps(result.agent_steps);
+                        // Keep overlay visible for a moment to show the steps
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                      }
+                      
                       if (result.redirect_url) {
                         window.location.href = result.redirect_url;
                       }
@@ -662,6 +862,8 @@ export const JobsPage = () => {
                       setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
                     } catch (err: any) {
                       setError(err.response?.data?.detail || 'Failed to generate tailored CV');
+                      setGeneratingCV(false);
+                      setCurrentStep(undefined);
                     }
                   }}
                   onPrepareCoverLetter={async (jobId: string) => {
@@ -718,5 +920,6 @@ export const JobsPage = () => {
         )}
       </div>
     </Layout>
+    </>
   );
 };

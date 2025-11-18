@@ -466,7 +466,9 @@ async def get_session_history(
             session_dict["job_id"] = str(session_dict["job_id"])
         sessions.append(InterviewSession(**session_dict))
     
-    avg_performance = sum(s.avg_score for s in sessions if s.avg_score) / len([s for s in sessions if s.avg_score]) if sessions else None
+    # Calculate average performance only if there are sessions with scores
+    sessions_with_scores = [s.avg_score for s in sessions if s.avg_score]
+    avg_performance = sum(sessions_with_scores) / len(sessions_with_scores) if sessions_with_scores else None
 
     return SessionHistory(
         sessions=sessions,
@@ -508,7 +510,9 @@ async def get_sessions_by_job(
             session_dict["job_id"] = str(session_dict["job_id"])
         sessions.append(InterviewSession(**session_dict))
     
-    avg_performance = sum(s.avg_score for s in sessions if s.avg_score) / len([s for s in sessions if s.avg_score]) if sessions else None
+    # Calculate average performance only if there are sessions with scores
+    sessions_with_scores = [s.avg_score for s in sessions if s.avg_score]
+    avg_performance = sum(sessions_with_scores) / len(sessions_with_scores) if sessions_with_scores else None
 
     return SessionHistory(
         sessions=sessions,
@@ -565,8 +569,6 @@ async def get_session_detail(
         except Exception as check_err:
             print(f"Error checking session existence: {check_err}")
             raise HTTPException(status_code=404, detail="Session not found")
-        
-        raise HTTPException(status_code=404, detail="Session not found")
     
     # Get responses
     response_rows = await db.fetch_all(

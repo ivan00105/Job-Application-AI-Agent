@@ -14,7 +14,7 @@ import sys
 import os
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search"
+SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search-vector"
 
 # Test user credentials
 TEST_USERNAME = os.getenv("TEST_USERNAME", "testuser1")
@@ -79,29 +79,25 @@ def main():
             return
         
         data = response.json()
-        count = data.get("count", 0)
-        results = data.get("results", [])
+        count = data.get("total", 0)
+        jobs = data.get("jobs", [])
         
         print(f"✅ Found {count} results\n")
         
-        if not results:
+        if not jobs:
             print("No results found.")
             return
         
         # Display results
         print("Results:")
         print("-" * 80)
-        for i, result in enumerate(results[:5], 1):
-            payload = result.get("payload", {})
-            score = result.get("score", 0)
-            
-            print(f"\n{i}. {payload.get('job_title', 'N/A')}")
-            print(f"   Company: {payload.get('company', 'N/A')}")
-            print(f"   Location: {payload.get('location', 'N/A')}")
-            print(f"   Score: {score:.4f}")
+        for i, job in enumerate(jobs[:5], 1):
+            print(f"\n{i}. {job.get('title', 'N/A')}")
+            print(f"   Company: {job.get('company', 'N/A')}")
+            print(f"   Location: {job.get('location', 'N/A')}")
             
             # Show URL if available
-            url = payload.get('url') or payload.get('job_url')
+            url = job.get('url') or job.get('job_url')
             if url:
                 print(f"   URL: {url}")
         

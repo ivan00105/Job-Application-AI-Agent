@@ -67,7 +67,7 @@ def main():
     print("3. Testing job search...")
     try:
         search_response = requests.post(
-            f"{API_BASE_URL}/api/jobs/search",
+            f"{API_BASE_URL}/api/jobs/search-vector",
             json={
                 "query": "developer",
                 "limit": 3
@@ -78,18 +78,17 @@ def main():
         
         if search_response.status_code == 200:
             data = search_response.json()
-            count = data.get("count", 0)
+            count = data.get("total", 0)
             print(f"   ✅ Search successful!")
             print(f"   Found {count} results")
             
             if count > 0:
                 print()
                 print("   Sample result:")
-                result = data["results"][0]
-                payload = result.get("payload", {})
-                print(f"   - Title: {payload.get('job_title', 'N/A')}")
-                print(f"   - Company: {payload.get('company', 'N/A')}")
-                print(f"   - Score: {result.get('score', 0):.4f}")
+                job = data["jobs"][0]
+                print(f"   - Title: {job.get('title', 'N/A')}")
+                print(f"   - Company: {job.get('company', 'N/A')}")
+                print(f"   - Location: {job.get('location', 'N/A')}")
             else:
                 print()
                 print("   ⚠️  No results found")

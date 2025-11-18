@@ -10,7 +10,7 @@ import json
 import os
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search"
+SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search-vector"
 
 TEST_USERNAME = os.getenv("TEST_USERNAME", "testuser1")
 TEST_PASSWORD = os.getenv("TEST_PASSWORD", "password123")
@@ -30,15 +30,30 @@ def get_token():
 
 def search_with_filters(query: str, token: str, **filters):
     """Perform search with filters."""
-    payload = {
+    # Separate body params from query params
+    body_params = {
         "query": query,
-        "limit": 10,
-        **filters
+        "limit": filters.pop("limit", 10),
     }
+    # Add optional body params
+    if "use_llm_enhancement" in filters:
+        body_params["use_llm_enhancement"] = filters.pop("use_llm_enhancement")
+    if "score_threshold" in filters:
+        body_params["score_threshold"] = filters.pop("score_threshold")
+    if "company_filter" in filters:
+        body_params["company_filter"] = filters.pop("company_filter")
+    if "min_experience_years" in filters:
+        body_params["min_experience_years"] = filters.pop("min_experience_years")
+    if "certifications" in filters:
+        body_params["certifications"] = filters.pop("certifications")
+    
+    # Remaining filters become query params
+    query_params = filters
     
     response = requests.post(
         SEARCH_ENDPOINT,
-        json=payload,
+        json=body_params,
+        params=query_params,
         headers={"Authorization": f"Bearer {token}"},
         timeout=60
     )
@@ -73,10 +88,9 @@ def main():
         company_filter="Google"  # Adjust based on your data
     )
     if data:
-        print(f"Found {data['count']} results\n")
-        for i, result in enumerate(data['results'][:3], 1):
-            payload = result['payload']
-            print(f"{i}. {payload.get('job_title')} at {payload.get('company')}")
+        print(f"Found {data['total']} results\n")
+        for i, job in enumerate(data['jobs'][:3], 1):
+            print(f"{i}. {job.get('title')} at {job.get('company')}")
     print()
     
     # Example 2: Search with experience requirement
@@ -88,10 +102,9 @@ def main():
         min_experience_years=3
     )
     if data:
-        print(f"Found {data['count']} results\n")
-        for i, result in enumerate(data['results'][:3], 1):
-            payload = result['payload']
-            print(f"{i}. {payload.get('job_title')} - Score: {result['score']:.4f}")
+        print(f"Found {data['total']} results\n")
+        for i, job in enumerate(data['jobs'][:3], 1):
+            print(f"{i}. {job.get('title')}")
     print()
     
     # Example 3: Search with certifications
@@ -103,10 +116,9 @@ def main():
         certifications=["AWS"]
     )
     if data:
-        print(f"Found {data['count']} results\n")
-        for i, result in enumerate(data['results'][:3], 1):
-            payload = result['payload']
-            print(f"{i}. {payload.get('job_title')} at {payload.get('company')}")
+        print(f"Found {data['total']} results\n")
+        for i, job in enumerate(data['jobs'][:3], 1):
+            print(f"{i}. {job.get('title')} at {job.get('company')}")
     print()
     
     # Example 4: Combined filters
@@ -120,10 +132,9 @@ def main():
         use_llm_enhancement=True
     )
     if data:
-        print(f"Found {data['count']} results\n")
-        for i, result in enumerate(data['results'][:3], 1):
-            payload = result['payload']
-            print(f"{i}. {payload.get('job_title')} at {payload.get('company')}")
+        print(f"Found {data['total']} results\n")
+        for i, job in enumerate(data['jobs'][:3], 1):
+            print(f"{i}. {job.get('title')} at {job.get('company')}")
     print()
     
     # Example 5: High similarity threshold
@@ -135,10 +146,9 @@ def main():
         score_threshold=0.8
     )
     if data:
-        print(f"Found {data['count']} results (only highly similar matches)\n")
-        for i, result in enumerate(data['results'][:3], 1):
-            payload = result['payload']
-            print(f"{i}. {payload.get('job_title')} - Score: {result['score']:.4f}")
+        print(f"Found {data['total']} results (only highly similar matches)\n")
+        for i, job in enumerate(data['jobs'][:3], 1):
+            print(f"{i}. {job.get('title')}")
     print()
     
     print("=" * 80)

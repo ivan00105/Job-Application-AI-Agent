@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
+import { AgenticLoadingOverlay } from '../components/AgenticLoadingOverlay';
 import { applicationsAPI } from '../api/client';
 import { 
     Briefcase, Bookmark, FileText, MessageSquare, Gift, 
     CheckCircle, XCircle, Ban 
 } from 'lucide-react';
 import { JobCard } from '../components/JobCard';
+import { FullScreenLoader } from '../components/FullScreenLoader';
 
 type ApplicationStatus = 
     | 'saved'
@@ -67,6 +69,9 @@ export const ApplicationsPage = () => {
     );
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
     const [preparationStatuses, setPreparationStatuses] = useState<Record<string, any>>({});
+    const [generatingType, setGeneratingType] = useState<'cv' | 'cover-letter' | null>(null);
+    const [agentSteps, setAgentSteps] = useState<any[]>([]);
+    const [currentStep, setCurrentStep] = useState<string | undefined>();
 
     useEffect(() => {
         loadApplications();
@@ -136,27 +141,72 @@ export const ApplicationsPage = () => {
 
     const handlePrepareCV = async (jobId: string) => {
         try {
-            setMessage({ type: 'success', text: 'Generating tailored CV...' });
+            setGeneratingType('cv');
+            setMessage(null); // Clear any previous messages
+            setAgentSteps([]);
+            setCurrentStep('generating');
+            
             const result = await applicationsAPI.prepareCV(jobId);
-            if (result.redirect_url) {
+            
+            // Store agent steps if available - show them before navigation
+            if (result.agent_steps && result.agent_steps.length > 0) {
+                setAgentSteps(result.agent_steps);
+                // Keep overlay visible for a moment to show the steps
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            // Check if generation was successful
+            if (result.success && result.redirect_url) {
+                // Keep loader visible during navigation - overlay will show on TailoredCVPage
                 navigate(result.redirect_url);
+            } else if (result.error) {
+                throw new Error(result.error);
+            } else {
+                setGeneratingType(null);
+                setCurrentStep(undefined);
+                setMessage({
+                    type: 'error',
+                    text: 'CV generation completed but no redirect URL was provided.'
+                });
             }
         } catch (err: any) {
+            setGeneratingType(null);
+            setCurrentStep(undefined);
+            const errorDetail = err.response?.data?.detail || err.message || 'Failed to generate tailored CV.';
+            
+            // Provide more helpful error messages
+            let errorMessage = errorDetail;
+            if (errorDetail.includes('CV profile not found') || errorDetail.includes('upload your CV')) {
+                errorMessage = 'Please upload your CV in the Profile page first before generating a tailored CV.';
+            } else if (errorDetail.includes('CV data')) {
+                errorMessage = 'Your CV data needs to be updated. Please re-upload your CV in the Profile page.';
+            } else if (errorDetail.includes('timeout') || errorDetail.includes('temporarily unavailable')) {
+                errorMessage = 'CV generation service is temporarily busy. Please try again in a moment.';
+            }
+            
             setMessage({
                 type: 'error',
-                text: err.response?.data?.detail || 'Failed to generate tailored CV. Please make sure you have uploaded your CV in the Profile page.'
+                text: errorMessage
             });
+            
+            // Auto-dismiss error after 8 seconds
+            setTimeout(() => setMessage(null), 8000);
         }
     };
 
     const handlePrepareCoverLetter = async (jobId: string) => {
         try {
-            setMessage({ type: 'success', text: 'Generating cover letter...' });
+            setGeneratingType('cover-letter');
+            setMessage(null); // Clear any previous messages
             const result = await applicationsAPI.prepareCoverLetter(jobId);
             if (result.redirect_url) {
+                // Keep loader visible during navigation
                 navigate(result.redirect_url);
+            } else {
+                setGeneratingType(null);
             }
         } catch (err: any) {
+            setGeneratingType(null);
             setMessage({
                 type: 'error',
                 text: err.response?.data?.detail || 'Failed to generate cover letter. Please make sure you have uploaded your CV in the Profile page.'
@@ -193,8 +243,12 @@ export const ApplicationsPage = () => {
     };
 
     return (
-        <Layout>
-            <div className="space-y-6">
+        <>
+            {generatingType && (
+                <FullScreenLoader type={generatingType} />
+            )}
+            <Layout>
+                <div className="space-y-6">
                 {/* Header */}
                 <div>
                     <h1 className="text-3xl font-bold text-gray-900">Saved Jobs</h1>
@@ -311,6 +365,7 @@ export const ApplicationsPage = () => {
                 )}
             </div>
         </Layout>
+        </>
     );
 };
 

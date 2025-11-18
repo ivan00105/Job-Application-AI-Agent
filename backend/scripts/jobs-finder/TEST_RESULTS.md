@@ -103,7 +103,7 @@
 **Status:** Authentication failing (500 Internal Server Error)
 
 **Reason:** 
-- Supabase package not installed/configured
+- PostgreSQL connection variables not configured
 - Database client returns None
 - Authentication endpoint requires database connection
 
@@ -115,14 +115,16 @@
 
 **Solution Options:**
 
-1. **Install Supabase** (if using Supabase):
-   ```bash
-   pip install supabase
-   ```
-   Then configure in `.env`:
+1. **Configure PostgreSQL**:
    ```env
-   SUPABASE_URL=your_url
-   SUPABASE_KEY=your_key
+   POSTGRES_HOST=localhost
+   POSTGRES_PORT=5432
+   POSTGRES_DB=job_agent
+   POSTGRES_USER=job_agent
+   POSTGRES_PASSWORD=your_password
+   ```
+   ```bash
+   python backend/scripts/run_migration.py
    ```
 
 2. **Use Direct Service Tests** (Recommended for now):
@@ -146,7 +148,7 @@
 - ✅ Service layer integration
 
 ### Needs Configuration ⚠️
-- ⚠️ API authentication (requires Supabase or PostgreSQL user management)
+- ⚠️ API authentication (requires PostgreSQL user management)
 - ⚠️ LLM query enhancement (optional - requires OpenRouter API key)
 
 ### Fully Tested ✅

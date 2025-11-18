@@ -1,0 +1,113 @@
+% User Flow Diagram for Job Application System
+% Requires: \usepackage{tikz}
+% Usage: Include this in your LaTeX document
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+    node distance = 1.5cm and 2cm,
+    auto,
+    % Define styles
+    startstop/.style = {
+        rectangle,
+        rounded corners,
+        minimum width = 3cm,
+        minimum height = 1cm,
+        text centered,
+        draw = black,
+        fill = blue!20
+    },
+    process/.style = {
+        rectangle,
+        minimum width = 3cm,
+        minimum height = 1cm,
+        text centered,
+        draw = black,
+        fill = yellow!20
+    },
+    decision/.style = {
+        diamond,
+        minimum width = 3cm,
+        minimum height = 1cm,
+        text centered,
+        draw = black,
+        fill = green!20
+    },
+    io/.style = {
+        trapezium,
+        trapezium left angle = 70,
+        trapezium right angle = 110,
+        minimum width = 3cm,
+        minimum height = 1cm,
+        text centered,
+        draw = black,
+        fill = orange!20
+    },
+    arrow/.style = {
+        ->,
+        >=stealth,
+        thick
+    }
+]
+
+    % Start
+    \node [startstop] (start) {Start};
+    
+    % Upload CV
+    \node [io, below of = start] (upload) {Upload CV};
+    
+    % Parse CV
+    \node [process, below of = upload] (parse) {System Parses CV\\Extracts Profile};
+    
+    % Search Jobs
+    \node [io, below of = parse] (search) {Search for Jobs\\(Semantic Search)};
+    
+    % View Matches
+    \node [process, below of = search] (matches) {View Job Matches\\with Relevance Scores};
+    
+    % Select Job Decision
+    \node [decision, below of = matches, yshift = -0.5cm] (select) {Select\\Job?};
+    
+    % Generate Tailored CV
+    \node [process, below of = select, yshift = -0.5cm] (generate) {Generate\\Tailored CV};
+    
+    % Review CV Decision
+    \node [decision, below of = generate, yshift = -0.5cm] (review) {Review\\CV?};
+    
+    % Edit CV
+    \node [process, left of = review, xshift = -2cm] (edit) {Edit CV};
+    
+    % Interview Prep Decision
+    \node [decision, below of = review, yshift = -0.5cm] (interview) {Prepare for\\Interview?};
+    
+    % Interview Prep
+    \node [process, right of = interview, xshift = 2cm] (prep) {AI Interview\\Preparation};
+    
+    % Apply
+    \node [io, below of = interview, yshift = -0.5cm] (apply) {Apply to Job};
+    
+    % End
+    \node [startstop, below of = apply] (end) {End};
+    
+    % Arrows
+    \draw [arrow] (start) -- (upload);
+    \draw [arrow] (upload) -- (parse);
+    \draw [arrow] (parse) -- (search);
+    \draw [arrow] (search) -- (matches);
+    \draw [arrow] (matches) -- (select);
+    \draw [arrow] (select) -- node {Yes} (generate);
+    \draw [arrow] (select) -| node [near start] {No} (search);
+    \draw [arrow] (generate) -- (review);
+    \draw [arrow] (review) -- node {Approve} (interview);
+    \draw [arrow] (review) -- node {Edit} (edit);
+    \draw [arrow] (edit) |- (review);
+    \draw [arrow] (interview) -- node {Yes} (prep);
+    \draw [arrow] (interview) -- node {No} (apply);
+    \draw [arrow] (prep) |- (apply);
+    \draw [arrow] (apply) -- (end);
+    
+\end{tikzpicture}
+\caption{User Flow Diagram: Job Application Process}
+\label{fig:user_flow}
+\end{figure}
+

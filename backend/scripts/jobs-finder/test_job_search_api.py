@@ -1,6 +1,6 @@
 """
 Test script for the job search API endpoint.
-Tests the POST /api/jobs/search endpoint with various scenarios.
+Tests the POST /api/jobs/search-vector endpoint with various scenarios.
 
 Usage:
     python backend/scripts/jobs-finder/test_job_search_api.py
@@ -20,7 +20,7 @@ from typing import Optional, Dict, Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search"
+SEARCH_ENDPOINT = f"{API_BASE_URL}/api/jobs/search-vector"
 
 # Test user credentials (adjust as needed)
 TEST_USERNAME = os.getenv("TEST_USERNAME", "testuser1")
@@ -80,20 +80,37 @@ def test_search(
         Response JSON or None if error
     """
     try:
-        payload = {
+        # Separate body params from query params for /search-vector endpoint
+        body_params = {
             "query": query,
             "limit": limit,
-            "collection_name": collection_name,
-            **kwargs
         }
         
+        # Add optional body params
+        if "use_llm_enhancement" in kwargs:
+            body_params["use_llm_enhancement"] = kwargs.pop("use_llm_enhancement")
+        if "score_threshold" in kwargs:
+            body_params["score_threshold"] = kwargs.pop("score_threshold")
+        if "company_filter" in kwargs:
+            body_params["company_filter"] = kwargs.pop("company_filter")
+        if "min_experience_years" in kwargs:
+            body_params["min_experience_years"] = kwargs.pop("min_experience_years")
+        if "certifications" in kwargs:
+            body_params["certifications"] = kwargs.pop("certifications")
+        
+        # Remaining kwargs become query params (location, hide_saved, offset)
+        query_params = kwargs
+        
         print(f"🔍 Searching: '{query}'")
-        if kwargs:
-            print(f"   Filters: {kwargs}")
+        if body_params or query_params:
+            print(f"   Body params: {body_params}")
+            if query_params:
+                print(f"   Query params: {query_params}")
         
         response = requests.post(
             SEARCH_ENDPOINT,
-            json=payload,
+            json=body_params,
+            params=query_params,
             headers={"Authorization": f"Bearer {token}"},
             timeout=60
         )
@@ -117,29 +134,25 @@ def print_results(data: Dict[str, Any], max_results: int = 3):
     if not data:
         return
     
-    count = data.get("count", 0)
-    results = data.get("results", [])
+    count = data.get("total", 0)
+    jobs = data.get("jobs", [])
     
     print(f"✅ Found {count} results\n")
     
-    if not results:
+    if not jobs:
         print("   No results found.\n")
         return
     
     print("Top results:")
     print("-" * 80)
     
-    for i, result in enumerate(results[:max_results], 1):
-        payload = result.get("payload", {})
-        score = result.get("score", 0)
-        
-        print(f"\n{i}. {payload.get('job_title', 'N/A')}")
-        print(f"   Company: {payload.get('company', 'N/A')}")
-        print(f"   Location: {payload.get('location', 'N/A')}")
-        print(f"   Similarity Score: {score:.4f}")
+    for i, job in enumerate(jobs[:max_results], 1):
+        print(f"\n{i}. {job.get('title', 'N/A')}")
+        print(f"   Company: {job.get('company', 'N/A')}")
+        print(f"   Location: {job.get('location', 'N/A')}")
         
         # Show snippet of description if available
-        description = payload.get('description', '') or payload.get('job_responsibilities', '')
+        description = job.get('description', '')
         if description:
             snippet = description[:150] + "..." if len(description) > 150 else description
             print(f"   Description: {snippet}")

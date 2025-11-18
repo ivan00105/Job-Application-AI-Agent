@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 try:
     import spacy
     SPACY_AVAILABLE = True
-except ImportError:
+except (ImportError, TypeError, Exception) as e:
     SPACY_AVAILABLE = False
-    logger.warning("spaCy not available. Duty extraction will be limited.")
+    logger.warning(f"spaCy not available (error: {type(e).__name__}). Duty extraction will be limited.")
 
 
 class JobProcessor:
