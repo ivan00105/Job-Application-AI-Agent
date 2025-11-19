@@ -20,6 +20,40 @@ let agentState = {
     isRunning: false
 };
 
+const DROPDOWN_OPTION_SELECTORS = [
+    '[role="option"]',
+    '[data-automation-id="promptOption"]',
+    '[data-automation-id="multiSelectOption"]',
+    '[data-automation-id="selectItem"]',
+    '[data-automation-id="selectOption"]',
+    '[data-uxi-widget-type="selectoption"]',
+    '[data-testid*="option"]',
+    '[data-test*="option"]',
+    '[data-role="option"]',
+    '.select-option',
+    '.Select-option',
+    '.dropdown-item',
+    '.ant-select-item-option',
+    '.MuiAutocomplete-option',
+    '.MuiListItem-root',
+    '.chakra-select__option'
+];
+
+const GENERIC_PLACEHOLDER_PATTERNS = [
+    /^select\b/i,
+    /^choose\b/i,
+    /^please select\b/i,
+    /^please choose\b/i,
+    /^select an option\b/i,
+    /^select one\b/i,
+    /^-- select/i,
+    /^select\.\.\./i,
+    /^none selected\b/i
+];
+
+const YES_VALUE_SET = new Set(['yes', 'true', 'y', '1', 'affirmative']);
+const NO_VALUE_SET = new Set(['no', 'false', 'n', '0', 'negative']);
+
 /**
  * Safely set the value of controlled inputs/textareas (React/Vue/etc.)
  */
@@ -246,8 +280,7 @@ function closeAllPopups() {
  * Returns array of option objects: [{text, value, element}]
  */
 async function waitForVisibleOptions(timeout = 1000) {
-    const hasVisibleOptions = () => Array.from(document.querySelectorAll('[role="option"]'))
-        .some(opt => opt.offsetParent !== null);
+    const hasVisibleOptions = () => getVisibleOptionNodes().length > 0;
 
     if (hasVisibleOptions()) {
         return;
@@ -307,12 +340,8 @@ async function extractOptionsFromDropdown(dropdown) {
         if (ownsId) {
             const listbox = document.getElementById(ownsId);
             if (listbox) {
-                listbox.querySelectorAll('[role="option"]').forEach(opt => {
-                    options.push({
-                        element: opt,
-                        text: opt.textContent.trim(),
-                        value: opt.getAttribute('data-value') || opt.textContent.trim()
-                    });
+                getVisibleOptionNodes(listbox).forEach(opt => {
+                    options.push(buildOptionDescriptor(opt));
                 });
             }
         }
@@ -323,14 +352,8 @@ async function extractOptionsFromDropdown(dropdown) {
             if (controlsId) {
                 const listbox = document.getElementById(controlsId);
                 if (listbox) {
-                    listbox.querySelectorAll('[role="option"]').forEach(opt => {
-                        if (opt.offsetParent !== null) {
-                            options.push({
-                                element: opt,
-                                text: opt.textContent.trim(),
-                                value: opt.getAttribute('data-value') || opt.textContent.trim()
-                            });
-                        }
+                    getVisibleOptionNodes(listbox).forEach(opt => {
+                        options.push(buildOptionDescriptor(opt));
                     });
                 }
             }
@@ -341,27 +364,17 @@ async function extractOptionsFromDropdown(dropdown) {
             const container = dropdown.nextElementSibling ||
                 dropdown.closest('[role="combobox"], .dropdown, .select, [class*="dropdown"]');
             if (container) {
-                container.querySelectorAll('[role="option"]').forEach(opt => {
-                    if (opt.offsetParent !== null) {
-                        options.push({
-                            element: opt,
-                            text: opt.textContent.trim(),
-                            value: opt.getAttribute('data-value') || opt.textContent.trim()
-                        });
-                    }
+                getVisibleOptionNodes(container).forEach(opt => {
+                    options.push(buildOptionDescriptor(opt));
                 });
             }
         }
 
         // Strategy 4: Global search for visible options (last resort)
         if (options.length === 0) {
-            document.querySelectorAll('[role="option"]').forEach(opt => {
-                if (opt.offsetParent !== null) {
-                    options.push({
-                        element: opt,
-                        text: opt.textContent.trim(),
-                        value: opt.getAttribute('data-value') || opt.textContent.trim()
-                    });
+            getVisibleOptionNodes().forEach(opt => {
+                if (!options.some(existing => existing.element === opt)) {
+                    options.push(buildOptionDescriptor(opt));
                 }
             });
         }
@@ -519,6 +532,10 @@ async function handleAutoFillClick() {
                             parentDropdownId: elementId,
                             optionValue: opt.value,
                             optionText: opt.text,
+                            groupLabel: dropdownLabel,
+                            optionLabel: opt.text,
+                            multiSelect: Boolean(elementData.isMultiSelect),
+                            selector: '',
                             serialized: {
                                 id: syntheticId,
                                 role: 'option',
@@ -527,7 +544,11 @@ async function handleAutoFillClick() {
                                 required: false,
                                 currentValue: '',
                                 description: `Option for ${dropdownLabel}`,
-                                context: ''
+                                context: '',
+                                groupLabel: dropdownLabel,
+                                optionLabel: opt.text,
+                                multiSelect: Boolean(elementData.isMultiSelect),
+                                selector: ''
                             }
                         });
                     });
@@ -690,6 +711,10 @@ function isChoiceButton(button) {
  * Get implicit ARIA role for an element
  */
 function getImplicitRole(element) {
+    if (element?.isContentEditable) {
+        return 'textbox';
+    }
+
     const tag = element.tagName.toLowerCase();
     const type = element.type?.toLowerCase();
 
@@ -898,7 +923,8 @@ function extractA11yEnhancedElements() {
         '[role="option"]',      // Dropdown options (visible after pre-opening)
         '[role="radio"]',
         '[role="checkbox"]',
-        '[role="textbox"]'
+        '[role="textbox"]',
+        '[contenteditable="true"]'
     ];
 
     // Recursive function to walk DOM including Shadow DOM
@@ -958,20 +984,52 @@ function extractA11yEnhancedElements() {
                 }
             }
 
+            const hasValue = hasMeaningfulValue(el);
+            let computedRole = (el.getAttribute('role') || '').toLowerCase() || getImplicitRole(el);
+            const multiSelect = detectMultiSelect(el);
+            if (shouldForceComboboxRole(el) || multiSelect) {
+                computedRole = 'combobox';
+            }
+
+            const isCustomDropdown = (computedRole === 'combobox' || computedRole === 'listbox') &&
+                el.tagName.toLowerCase() !== 'select';
+
             // Skip pre-filled fields (except buttons) BUT keep custom dropdowns (combobox/listbox)
-            const rawRole = (el.getAttribute('role') || '').toLowerCase();
-            const isCustomDropdown = rawRole === 'combobox' || rawRole === 'listbox';
-            if (el.value && el.value.trim() && el.type !== 'button' && !isCustomDropdown) {
+            if (hasValue && el.type !== 'button' && !isCustomDropdown) {
                 skippedReasons.preFilled++;
                 console.log(`${indent}[AutoFill] Skipping (pre-filled): ${el.tagName} ${el.type || ''} value="${el.value.substring(0, 20)}"`);
                 return;
             }
 
             // Get semantic info
-            const computedRole = el.getAttribute('role') || getImplicitRole(el);
             const { label: scoredLabel, score: labelScore } = findBestLabel(el);
             const needsContext = labelScore < 70;
             let contextSnippet = needsContext ? getSurroundingContext(el) : '';
+            const groupLabel = getGroupLegendLabel(el);
+            let optionLabel = '';
+            const roleLower = (computedRole || '').toLowerCase();
+            const isChoiceControl = ['radio', 'checkbox', 'option'].includes(roleLower) ||
+                el.type === 'radio' || el.type === 'checkbox';
+            if (isChoiceControl) {
+                optionLabel = getChoiceOptionLabel(el);
+                const normalizedGroup = normalizeText(groupLabel);
+                if (optionLabel && normalizedGroup && normalizeText(optionLabel) === normalizedGroup) {
+                    const fallbackValue = cleanText(
+                        el.value ||
+                        el.getAttribute('data-value') ||
+                        el.getAttribute('aria-label') ||
+                        ''
+                    );
+                    if (fallbackValue && normalizeText(fallbackValue) !== normalizedGroup) {
+                        optionLabel = fallbackValue;
+                    } else {
+                        optionLabel = '';
+                    }
+                }
+                if (!optionLabel && scoredLabel && (!normalizedGroup || normalizeText(scoredLabel) !== normalizedGroup)) {
+                    optionLabel = scoredLabel;
+                }
+            }
 
             // SHADOW DOM HOST FIX:
             // If we're on a custom element host (has shadowRoot) and no name found,
@@ -1000,7 +1058,12 @@ function extractA11yEnhancedElements() {
                 return;
             }
 
-            const finalLabel = computedName || contextSnippet || 'Unknown Field';
+            let finalLabel = computedName || contextSnippet || 'Unknown Field';
+            if (groupLabel && isChoiceControl) {
+                finalLabel = optionLabel
+                    ? `${groupLabel} (${optionLabel})`
+                    : groupLabel;
+            }
 
             console.log(`${indent}[AutoFill] ✓ Found: ${computedRole} "${finalLabel}" (${el.tagName}${el.type ? ':' + el.type : ''})`);
 
@@ -1016,6 +1079,9 @@ function extractA11yEnhancedElements() {
                 a11yName: finalLabel,
                 a11yDescription: getAccessibleDescription(el),
                 context: contextSnippet || '',
+                groupLabel: groupLabel || '',
+                optionLabel: optionLabel || '',
+                isMultiSelect: multiSelect,
                 labelScore,
                 element: el  // Store DOM reference
             });
@@ -1070,12 +1136,18 @@ function buildElementRegistry(elements) {
             }
         }
 
+        const selector = domElementToStore ? generateSelector(domElementToStore) : '';
+
         // Store the mapping
         elementRegistry.set(id, {
             domElement: domElementToStore,  // Now points to actual input (not host)
             a11yName: elementData.a11yName,
             a11yRole: elementData.a11yRole,
             context: elementData.context || '',
+            groupLabel: elementData.groupLabel || '',
+            optionLabel: elementData.optionLabel || '',
+            multiSelect: Boolean(elementData.isMultiSelect),
+            selector,
             // For serialization to backend
             serialized: {
                 id: id,
@@ -1085,13 +1157,18 @@ function buildElementRegistry(elements) {
                 required: elementData.required,
                 currentValue: elementData.value,
                 description: elementData.a11yDescription,
-                context: elementData.context || ''
+                context: elementData.context || '',
+                groupLabel: elementData.groupLabel || '',
+                optionLabel: elementData.optionLabel || '',
+                multiSelect: Boolean(elementData.isMultiSelect),
+                selector
             }
         });
 
         // Attach registry metadata back onto element data for later lookups
         elementData.elementId = id;
         elementData.domRef = domElementToStore;
+        elementData.selector = selector;
     });
 
     return Array.from(elementRegistry.values()).map(v => v.serialized);
@@ -1209,6 +1286,291 @@ function cleanText(text) {
         .replace(/\s+/g, ' ')         // Collapse multiple spaces
         .replace(/[*:]+$/g, '')       // Remove trailing asterisks/colons
         .trim();
+}
+
+function normalizeText(text) {
+    return cleanText(text || '').toLowerCase();
+}
+
+function escapeForAttribute(value) {
+    if (!value) {
+        return '';
+    }
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+        return window.CSS.escape(value);
+    }
+    return value.replace(/["\\]/g, '\\$&');
+}
+
+function textMatches(target, candidate) {
+    const normalizedTarget = normalizeText(target);
+    const normalizedCandidate = normalizeText(candidate);
+    if (!normalizedTarget || !normalizedCandidate) {
+        return false;
+    }
+    return normalizedTarget === normalizedCandidate ||
+        normalizedCandidate.includes(normalizedTarget) ||
+        normalizedTarget.includes(normalizedCandidate);
+}
+
+function isGenericPlaceholder(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+        return false;
+    }
+    return GENERIC_PLACEHOLDER_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+function getBooleanCategory(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+        return null;
+    }
+    if (YES_VALUE_SET.has(normalized)) {
+        return 'yes';
+    }
+    if (NO_VALUE_SET.has(normalized)) {
+        return 'no';
+    }
+    return null;
+}
+
+function hasMeaningfulValue(element) {
+    if (!element || element.type === 'button') {
+        return false;
+    }
+
+    const controlType = (element.type || element.getAttribute('type') || '').toLowerCase();
+    if (controlType === 'checkbox' || controlType === 'radio') {
+        return false;
+    }
+
+    const tag = element.tagName.toLowerCase();
+    const rawValue = element.value ?? '';
+
+    if (!rawValue.trim()) {
+        return false;
+    }
+
+    if (isGenericPlaceholder(rawValue)) {
+        return false;
+    }
+
+    if (tag === 'select') {
+        const selectedOption = element.options?.[element.selectedIndex];
+        if (selectedOption) {
+            const optionText = cleanText(selectedOption.textContent || '');
+            if (!optionText) {
+                return false;
+            }
+            if (isGenericPlaceholder(optionText) || isGenericPlaceholder(selectedOption.value)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+function shouldForceComboboxRole(element) {
+    if (!element) {
+        return false;
+    }
+
+    const explicitRole = (element.getAttribute('role') || '').toLowerCase();
+    if (explicitRole === 'combobox' || explicitRole === 'listbox') {
+        return true;
+    }
+
+    const tag = element.tagName?.toLowerCase();
+    if (tag === 'select') {
+        return false;
+    }
+
+    const ariaHasPopup = (element.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (ariaHasPopup === 'listbox' || ariaHasPopup === 'tree') {
+        return true;
+    }
+
+    const ariaAutocomplete = (element.getAttribute('aria-autocomplete') || '').toLowerCase();
+    if (ariaAutocomplete === 'list' || ariaAutocomplete === 'both') {
+        return true;
+    }
+
+    const ariaControls = element.getAttribute('aria-controls');
+    if (ariaControls) {
+        const controlled = document.getElementById(ariaControls);
+        if (controlled) {
+            const controlledRole = (controlled.getAttribute('role') || '').toLowerCase();
+            if (controlledRole === 'listbox' || controlledRole === 'tree') {
+                return true;
+            }
+        }
+    }
+
+    const automationId = (element.getAttribute('data-automation-id') || '').toLowerCase();
+    if (automationId.includes('multiselect') || automationId.includes('select') || automationId.includes('autocomplete')) {
+        return true;
+    }
+
+    return false;
+}
+
+function detectMultiSelect(element) {
+    if (!element) {
+        return false;
+    }
+
+    if (element.tagName?.toLowerCase() === 'select' && element.multiple) {
+        return true;
+    }
+
+    if ((element.getAttribute('aria-multiselectable') || '').toLowerCase() === 'true') {
+        return true;
+    }
+
+    const automationId = (element.getAttribute('data-automation-id') || '').toLowerCase();
+    if (automationId.includes('multiselect')) {
+        return true;
+    }
+
+    const ownerId = element.getAttribute('aria-owns') || element.getAttribute('aria-controls');
+    if (ownerId) {
+        const ownedNode = document.getElementById(ownerId);
+        if (ownedNode && (ownedNode.getAttribute('aria-multiselectable') || '').toLowerCase() === 'true') {
+            return true;
+        }
+    }
+
+    const multiselectContainer = element.closest('[aria-multiselectable="true"], [data-automation-id*="multiSelect"]');
+    return Boolean(multiselectContainer);
+}
+
+function getGroupLegendLabel(element) {
+    if (!element) {
+        return '';
+    }
+
+    const fieldset = element.closest('fieldset');
+    if (fieldset) {
+        const legend = fieldset.querySelector('legend');
+        const legendText = cleanText(legend?.textContent || '');
+        if (legendText) {
+            return legendText;
+        }
+    }
+
+    const ariaGroup = element.closest('[role="group"], [role="radiogroup"], [data-automation-id*="group"]');
+    if (ariaGroup) {
+        const ariaLabel = cleanText(ariaGroup.getAttribute('aria-label') || '');
+        if (ariaLabel) {
+            return ariaLabel;
+        }
+
+        const labelledBy = ariaGroup.getAttribute('aria-labelledby');
+        if (labelledBy) {
+            const ids = labelledBy.split(/\s+/);
+            for (const id of ids) {
+                const labelNode = document.getElementById(id);
+                const nodeText = cleanText(labelNode?.textContent || '');
+                if (nodeText) {
+                    return nodeText;
+                }
+            }
+        }
+
+        const groupLegend = ariaGroup.querySelector('legend');
+        const groupLegendText = cleanText(groupLegend?.textContent || '');
+        if (groupLegendText) {
+            return groupLegendText;
+        }
+    }
+
+    const wrapper = element.closest('[class*="question"], [class*="form-group"], [data-testid*="question"], [data-test*="question"]');
+    if (wrapper) {
+        const heading = wrapper.querySelector('legend, h2, h3, .question-label, [data-test*="label"]');
+        const headingText = cleanText(heading?.textContent || '');
+        if (headingText) {
+            return headingText;
+        }
+    }
+
+    return '';
+}
+
+function getChoiceOptionLabel(element) {
+    if (!element) {
+        return '';
+    }
+
+    const wrappedLabel = element.closest('label');
+    if (wrappedLabel) {
+        const text = cleanText(wrappedLabel.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    if (element.id) {
+        const explicitLabel = document.querySelector(`label[for="${element.id}"]`);
+        const text = cleanText(explicitLabel?.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const ariaLabel = cleanText(element.getAttribute('aria-label') || '');
+    if (ariaLabel) {
+        return ariaLabel;
+    }
+
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+        const ids = labelledBy.split(/\s+/);
+        for (const id of ids) {
+            const labelEl = document.getElementById(id);
+            const text = cleanText(labelEl?.textContent || '');
+            if (text) {
+                return text;
+            }
+        }
+    }
+
+    const sibling = element.nextElementSibling;
+    if (sibling) {
+        const text = cleanText(sibling.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const prev = element.previousElementSibling;
+    if (prev) {
+        const text = cleanText(prev.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const dataValue = element.getAttribute('data-value') ||
+        element.getAttribute('data-text') ||
+        element.getAttribute('value');
+    if (dataValue) {
+        return cleanText(dataValue);
+    }
+
+    return '';
+}
+
+function isNodeVisible(node) {
+    if (!node) {
+        return false;
+    }
+    if (node.offsetParent !== null) {
+        return true;
+    }
+    const rect = node.getBoundingClientRect?.();
+    return Boolean(rect && rect.width > 0 && rect.height > 0);
 }
 
 /**
@@ -1411,25 +1773,42 @@ function focusAndOpenDropdown(element) {
     }
 }
 
-function collectOptionNodes() {
-    const selectors = [
-        '[role="option"]',
-        '[data-value]',
-        '.select-option',
-        '.Select-option',
-        '.dropdown-item',
-        '.ant-select-item-option',
-        '.MuiAutocomplete-option',
-        '.MuiListItem-root',
-        '.chakra-select__option'
-    ];
-
+function getVisibleOptionNodes(root = document) {
     const nodes = new Set();
-    selectors.forEach(selector => {
-        document.querySelectorAll(selector).forEach(node => nodes.add(node));
+    DROPDOWN_OPTION_SELECTORS.forEach(selector => {
+        root.querySelectorAll(selector).forEach(node => {
+            if (isNodeVisible(node)) {
+                nodes.add(node);
+            }
+        });
     });
-
     return Array.from(nodes);
+}
+
+function collectOptionNodes() {
+    return getVisibleOptionNodes(document);
+}
+
+function buildOptionDescriptor(node) {
+    const text = cleanText(
+        node.getAttribute('data-display') ||
+        node.getAttribute('data-text') ||
+        node.getAttribute('aria-label') ||
+        node.textContent ||
+        ''
+    );
+    const value = cleanText(
+        node.getAttribute('data-value') ||
+        node.getAttribute('data-id') ||
+        node.getAttribute('data-option-value') ||
+        text
+    );
+
+    return {
+        element: node,
+        text: text || value,
+        value: value || text
+    };
 }
 
 function findMatchingOptionNode(targetText) {
@@ -1439,16 +1818,117 @@ function findMatchingOptionNode(targetText) {
     }
 
     return collectOptionNodes().find(node => {
-        const text = cleanText(node.textContent || '').toLowerCase();
-        if (!text) {
+        const candidates = [
+            node.getAttribute('data-text'),
+            node.getAttribute('data-display'),
+            node.getAttribute('data-value'),
+            node.getAttribute('aria-label'),
+            node.textContent
+        ].map(value => cleanText(value || '').toLowerCase()).filter(Boolean);
+
+        if (candidates.length === 0) {
             return false;
         }
-        const visible = node.offsetParent !== null || node.getAttribute('aria-hidden') !== 'true';
-        if (!visible) {
-            return false;
-        }
-        return text === normalizedTarget || text.includes(normalizedTarget) || normalizedTarget.includes(text);
+
+        return candidates.some(text => text === normalizedTarget || text.includes(normalizedTarget) || normalizedTarget.includes(text));
     }) || null;
+}
+
+function getRadioGroupElements(element) {
+    if (!element) {
+        return [];
+    }
+
+    if (element.type === 'radio' && element.name) {
+        const escapedName = escapeForAttribute(element.name);
+        if (escapedName) {
+            return Array.from(document.querySelectorAll(`input[type="radio"][name="${escapedName}"]`));
+        }
+    }
+
+    const group = element.closest?.('[role="radiogroup"], [role="group"], [data-testid*="radio"], [data-test*="radio"]');
+    if (group) {
+        const radios = group.querySelectorAll('input[type="radio"], [role="radio"]');
+        if (radios.length > 0) {
+            return Array.from(radios);
+        }
+    }
+
+    if (element.type === 'radio' || element.getAttribute?.('role') === 'radio') {
+        return [element];
+    }
+
+    return [];
+}
+
+function getRadioCandidateTexts(radio) {
+    if (!radio) {
+        return [];
+    }
+
+    const texts = [];
+    const attributeSources = ['aria-label', 'data-label', 'data-value', 'data-text', 'title'];
+    attributeSources.forEach(attr => {
+        const value = radio.getAttribute?.(attr);
+        if (value) {
+            texts.push(value);
+        }
+    });
+
+    const attrValue = radio.getAttribute?.('value') ?? radio.value;
+    if (attrValue) {
+        texts.push(attrValue);
+    }
+
+    if (radio.id) {
+        const explicitLabel = document.querySelector(`label[for="${radio.id}"]`);
+        if (explicitLabel) {
+            texts.push(explicitLabel.textContent);
+        }
+    }
+
+    const wrappingLabel = radio.closest?.('label');
+    if (wrappingLabel) {
+        texts.push(wrappingLabel.textContent);
+    }
+
+    if (radio.textContent) {
+        texts.push(radio.textContent);
+    }
+
+    if (radio.nextElementSibling) {
+        texts.push(radio.nextElementSibling.textContent);
+    }
+
+    return texts.map(cleanText).filter(Boolean);
+}
+
+function findMatchingRadioOption(element, targetValue) {
+    const normalizedTarget = normalizeText(targetValue);
+    if (!element || !normalizedTarget) {
+        return null;
+    }
+
+    const desiredBoolean = getBooleanCategory(targetValue);
+    const candidates = getRadioGroupElements(element);
+
+    for (const candidate of candidates) {
+        const texts = getRadioCandidateTexts(candidate);
+        if (texts.some(text => textMatches(targetValue, text))) {
+            return candidate;
+        }
+
+        if (desiredBoolean) {
+            const candidateBoolean = getBooleanCategory(candidate.getAttribute?.('data-value')) ||
+                getBooleanCategory(candidate.value) ||
+                texts.map(getBooleanCategory).find(Boolean);
+            if (candidateBoolean && candidateBoolean === desiredBoolean) {
+                return candidate;
+            }
+        }
+    }
+
+    return null;
 }
 
 async function waitForDropdownOption(targetText, timeout = 2500) {
@@ -1573,22 +2053,15 @@ async function selectOption(element, value, label) {
 function clickElement(element, value, label) {
     // For radio buttons, try to find the specific option by value
     if (element.type === 'radio') {
-        const radioName = element.name;
-        const radios = document.querySelectorAll(`input[type="radio"][name="${radioName}"]`);
-        let targetRadio = element;
-
-        for (const radio of radios) {
-            if (radio.value.toLowerCase() === value.toLowerCase()) {
-                targetRadio = radio;
-                break;
-            }
-            const radioLabel = document.querySelector(`label[for="${radio.id}"]`);
-            if (radioLabel && radioLabel.textContent.toLowerCase().trim() === value.toLowerCase()) {
-                targetRadio = radio;
-                break;
-            }
+        const targetRadio = findMatchingRadioOption(element, value);
+        if (targetRadio) {
+            element = targetRadio;
         }
-        element = targetRadio;
+    } else if (element.getAttribute && element.getAttribute('role') === 'radio') {
+        const targetRadio = findMatchingRadioOption(element, value);
+        if (targetRadio) {
+            element = targetRadio;
+        }
     }
 
     // For choice buttons, find the specific button by text

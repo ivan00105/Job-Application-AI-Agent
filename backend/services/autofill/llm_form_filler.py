@@ -242,6 +242,12 @@ def format_elements_list(elements: List[Dict]) -> str:
             lines.append(f"  Description: {el['description']}")
         if el.get('context'):
             lines.append(f"  Context: {el['context']}")
+        if el.get('groupLabel'):
+            lines.append(f"  Group: {el['groupLabel']}")
+        if el.get('optionLabel'):
+            lines.append(f"  Option Label: {el['optionLabel']}")
+        if el.get('multiSelect'):
+            lines.append(f"  Multi-Select: yes")
         lines.append("")
     
     return "\n".join(lines)

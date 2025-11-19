@@ -17,6 +17,10 @@ class A11yFormElement(BaseModel):
     currentValue: str
     description: Optional[str] = ""
     context: Optional[str] = None
+    groupLabel: Optional[str] = None
+    optionLabel: Optional[str] = None
+    multiSelect: Optional[bool] = False
+    selector: Optional[str] = None
 
 
 class AnalyzeFormRequest(BaseModel):
