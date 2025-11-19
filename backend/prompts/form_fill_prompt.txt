@@ -17,6 +17,7 @@ Each element has:
 - type: HTML input type if applicable
 - required: Whether field is required
 - currentValue: Any existing value
+- context: Up to 150 chars of nearby text when the label is unclear
 
 USER CV DATA:
 {cv_data}
@@ -146,3 +147,4 @@ Remember:
 - Match interaction type to element role
 - Return valid JSON array with ] at the end
 - Empty string for missing data, not "None"
+- If the label looks generic (e.g., "Question") or missing, use the provided `context` text to infer the field's intent before defaulting to low confidence

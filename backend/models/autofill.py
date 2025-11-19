@@ -16,6 +16,7 @@ class A11yFormElement(BaseModel):
     required: bool
     currentValue: str
     description: Optional[str] = ""
+    context: Optional[str] = None
 
 
 class AnalyzeFormRequest(BaseModel):

@@ -133,6 +133,7 @@ async def analyze_and_fill_form(
     """
     # Combine memory (company memory takes priority)
     all_memory = company_memory + global_memory
+    element_lookup = {el.get('id'): el for el in elements if el.get('id')}
     
     # PRE-FILL STEP: Use fuzzy matching to auto-fill fields with saved answers (80%+ similarity)
     prefilled_actions = []
@@ -208,6 +209,7 @@ async def analyze_and_fill_form(
         
         # Parse JSON response
         llm_actions = parse_llm_response(response)
+        llm_actions = filter_valid_actions(llm_actions, element_lookup)
         
         # Combine pre-filled actions with LLM actions
         all_actions = prefilled_actions + llm_actions
@@ -238,9 +240,45 @@ def format_elements_list(elements: List[Dict]) -> str:
             lines.append(f"  Current: {el['currentValue']}")
         if el.get('description'):
             lines.append(f"  Description: {el['description']}")
+        if el.get('context'):
+            lines.append(f"  Context: {el['context']}")
         lines.append("")
     
     return "\n".join(lines)
+
+
+def filter_valid_actions(actions: List[Dict[str, Any]], element_lookup: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure actions reference known elements and valid interactions."""
+    role_interaction_map = {
+        'textbox': {'fill_text'},
+        'searchbox': {'fill_text'},
+        'spinbutton': {'fill_text'},
+        'textarea': {'fill_text'},
+        'combobox': {'select_option', 'fill_text', 'click', 'need_options'},
+        'listbox': {'select_option', 'click', 'need_options'},
+        'checkbox': {'check'},
+        'switch': {'check'},
+        'radio': {'click'},
+        'button': {'click'},
+        'option': {'click'},
+    }
+
+    valid_actions = []
+    for action in actions:
+        element = element_lookup.get(action['elementId'])
+        if not element:
+            print(f"[LLM Form Filler] Dropping action for unknown elementId: {action['elementId']}")
+            continue
+
+        role = (element.get('role') or '').lower()
+        allowed_interactions = role_interaction_map.get(role)
+        if allowed_interactions and action['interaction'] not in allowed_interactions:
+            print(f"[LLM Form Filler] Dropping action with invalid interaction '{action['interaction']}' for role '{role}'")
+            continue
+
+        valid_actions.append(action)
+
+    return valid_actions
 
 
 def parse_llm_response(response: str) -> List[Dict[str, Any]]:
