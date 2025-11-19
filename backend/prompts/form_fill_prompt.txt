@@ -17,6 +17,10 @@ Each element has:
 - type: HTML input type if applicable
 - required: Whether field is required
 - currentValue: Any existing value
+- context: Up to 150 chars of nearby text when the label is unclear
+- groupLabel: Legend text (e.g., the question in a radio/checkbox group)
+- optionLabel: Specific option text when the element is one choice in a group
+- multiSelect: "true" when the field accepts multiple selections
 
 USER CV DATA:
 {cv_data}
@@ -146,3 +150,6 @@ Remember:
 - Match interaction type to element role
 - Return valid JSON array with ] at the end
 - Empty string for missing data, not "None"
+- If the label looks generic (e.g., "Question") or missing, use the provided `context` text to infer the field's intent before defaulting to low confidence
+- When `groupLabel` is provided, treat it as the main question and rely on `optionLabel` for the specific choice. Use the option text for the action `value` so the correct element can be clicked.
+- If `multiSelect` is true, you may output multiple actions for that element (one per option). When unsure what options exist, return a `need_options` action first.

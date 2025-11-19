@@ -20,6 +20,135 @@ let agentState = {
     isRunning: false
 };
 
+const DROPDOWN_OPTION_SELECTORS = [
+    '[role="option"]',
+    '[data-automation-id="promptOption"]',
+    '[data-automation-id="multiSelectOption"]',
+    '[data-automation-id="selectItem"]',
+    '[data-automation-id="selectOption"]',
+    '[data-uxi-widget-type="selectoption"]',
+    '[data-testid*="option"]',
+    '[data-test*="option"]',
+    '[data-role="option"]',
+    '.select-option',
+    '.Select-option',
+    '.dropdown-item',
+    '.ant-select-item-option',
+    '.MuiAutocomplete-option',
+    '.MuiListItem-root',
+    '.chakra-select__option'
+];
+
+const GENERIC_PLACEHOLDER_PATTERNS = [
+    /^select\b/i,
+    /^choose\b/i,
+    /^please select\b/i,
+    /^please choose\b/i,
+    /^select an option\b/i,
+    /^select one\b/i,
+    /^-- select/i,
+    /^select\.\.\./i,
+    /^none selected\b/i
+];
+
+const YES_VALUE_SET = new Set(['yes', 'true', 'y', '1', 'affirmative']);
+const NO_VALUE_SET = new Set(['no', 'false', 'n', '0', 'negative']);
+
+/**
+ * Safely set the value of controlled inputs/textareas (React/Vue/etc.)
+ */
+function setNativeValue(element, value) {
+    if (!element) {
+        return;
+    }
+
+    const hasValueProperty = 'value' in element;
+    if (!hasValueProperty) {
+        if (element.isContentEditable) {
+            element.textContent = value;
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.dispatchEvent(new Event('blur', { bubbles: true }));
+        }
+        return;
+    }
+
+    const previousValue = element.value;
+    const tracker = element._valueTracker;
+    if (tracker) {
+        tracker.setValue(previousValue);
+    }
+
+    const tag = element.tagName?.toLowerCase();
+    let prototype = null;
+    if (tag === 'textarea') {
+        prototype = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
+    } else if (tag === 'select') {
+        prototype = window.HTMLSelectElement && window.HTMLSelectElement.prototype;
+    } else {
+        prototype = window.HTMLInputElement && window.HTMLInputElement.prototype;
+    }
+
+    const ownDescriptor = Object.getOwnPropertyDescriptor(element, 'value');
+    const prototypeDescriptor = prototype ? Object.getOwnPropertyDescriptor(prototype, 'value') : null;
+    const descriptor = ownDescriptor?.set ? ownDescriptor : prototypeDescriptor;
+
+    if (!descriptor || !descriptor.set) {
+        element.value = value;
+    } else {
+        descriptor.set.call(element, value);
+    }
+
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
+}
+
+/**
+ * Ensure registry element references remain attached to the DOM
+ */
+async function ensureLiveElementData(action) {
+    const elementData = elementRegistry.get(action.elementId);
+    if (!elementData) {
+        console.error(`[AutoFill] Element not found in registry: ${action.elementId}`);
+        return null;
+    }
+
+    if (!elementData.domElement || !elementData.domElement.isConnected) {
+        console.warn(`[AutoFill] Element ${action.elementId} detached. Attempting to re-query...`);
+        if (elementData.a11yRole === 'option' && elementData.parentDropdownId) {
+            const parentEntry = elementRegistry.get(elementData.parentDropdownId);
+            if (parentEntry?.domElement) {
+                focusAndOpenDropdown(parentEntry.domElement);
+                const optionNode = await waitForDropdownOption(
+                    elementData.optionText || action.value || action.label
+                );
+                if (optionNode) {
+                    elementData.domElement = optionNode;
+                    return elementData;
+                }
+            }
+        }
+
+        const refreshedElement = findElementFallback({
+            label: action.label,
+            value: action.value,
+            interaction: action.interaction,
+            selector: elementData.serialized?.selector
+        });
+
+        if (!refreshedElement) {
+            console.error(`[AutoFill] Unable to recover element for ${action.label || action.elementId}`);
+            elementRegistry.delete(action.elementId);
+            return null;
+        }
+
+        elementData.domElement = refreshedElement;
+    }
+
+    return elementData;
+}
+
 /**
  * Helper function to check if agent can continue (for future loop implementation)
  * Includes all safety mechanisms to prevent infinite loops
@@ -150,9 +279,38 @@ function closeAllPopups() {
  * Handles auto-close by opening one at a time
  * Returns array of option objects: [{text, value, element}]
  */
+async function waitForVisibleOptions(timeout = 1000) {
+    const hasVisibleOptions = () => getVisibleOptionNodes().length > 0;
+
+    if (hasVisibleOptions()) {
+        return;
+    }
+
+    await new Promise(resolve => {
+        const start = Date.now();
+        const observer = new MutationObserver(() => {
+            if (hasVisibleOptions()) {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                resolve();
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        const pollInterval = setInterval(() => {
+            if (hasVisibleOptions() || Date.now() - start > timeout) {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                resolve();
+            }
+        }, 100);
+    });
+}
+
 async function extractOptionsFromDropdown(dropdown) {
     try {
-        const dropdownLabel = getAccessibleName(dropdown);
+        const dropdownLabel = findBestLabel(dropdown).label || getAccessibleName(dropdown);
         console.log(`[AutoFill] Opening dropdown: "${dropdownLabel}"`);
 
         // Try to find and click the dropdown button (many custom dropdowns have a separate button)
@@ -171,8 +329,8 @@ async function extractOptionsFromDropdown(dropdown) {
         dropdown.dispatchEvent(new Event('focus', { bubbles: true }));
         dropdown.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
 
-        // Wait longer for options to appear (increased from 250ms to 500ms)
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Wait for options to render instead of fixed timeout
+        await waitForVisibleOptions(1200);
 
         // Extract options (try multiple strategies)
         const options = [];
@@ -182,12 +340,8 @@ async function extractOptionsFromDropdown(dropdown) {
         if (ownsId) {
             const listbox = document.getElementById(ownsId);
             if (listbox) {
-                listbox.querySelectorAll('[role="option"]').forEach(opt => {
-                    options.push({
-                        element: opt,
-                        text: opt.textContent.trim(),
-                        value: opt.getAttribute('data-value') || opt.textContent.trim()
-                    });
+                getVisibleOptionNodes(listbox).forEach(opt => {
+                    options.push(buildOptionDescriptor(opt));
                 });
             }
         }
@@ -198,14 +352,8 @@ async function extractOptionsFromDropdown(dropdown) {
             if (controlsId) {
                 const listbox = document.getElementById(controlsId);
                 if (listbox) {
-                    listbox.querySelectorAll('[role="option"]').forEach(opt => {
-                        if (opt.offsetParent !== null) {
-                            options.push({
-                                element: opt,
-                                text: opt.textContent.trim(),
-                                value: opt.getAttribute('data-value') || opt.textContent.trim()
-                            });
-                        }
+                    getVisibleOptionNodes(listbox).forEach(opt => {
+                        options.push(buildOptionDescriptor(opt));
                     });
                 }
             }
@@ -216,27 +364,17 @@ async function extractOptionsFromDropdown(dropdown) {
             const container = dropdown.nextElementSibling ||
                 dropdown.closest('[role="combobox"], .dropdown, .select, [class*="dropdown"]');
             if (container) {
-                container.querySelectorAll('[role="option"]').forEach(opt => {
-                    if (opt.offsetParent !== null) {
-                        options.push({
-                            element: opt,
-                            text: opt.textContent.trim(),
-                            value: opt.getAttribute('data-value') || opt.textContent.trim()
-                        });
-                    }
+                getVisibleOptionNodes(container).forEach(opt => {
+                    options.push(buildOptionDescriptor(opt));
                 });
             }
         }
 
         // Strategy 4: Global search for visible options (last resort)
         if (options.length === 0) {
-            document.querySelectorAll('[role="option"]').forEach(opt => {
-                if (opt.offsetParent !== null) {
-                    options.push({
-                        element: opt,
-                        text: opt.textContent.trim(),
-                        value: opt.getAttribute('data-value') || opt.textContent.trim()
-                    });
+            getVisibleOptionNodes().forEach(opt => {
+                if (!options.some(existing => existing.element === opt)) {
+                    options.push(buildOptionDescriptor(opt));
                 }
             });
         }
@@ -391,6 +529,13 @@ async function handleAutoFillClick() {
                             domElement: opt.element,
                             a11yName: opt.text,
                             a11yRole: 'option',
+                            parentDropdownId: elementId,
+                            optionValue: opt.value,
+                            optionText: opt.text,
+                            groupLabel: dropdownLabel,
+                            optionLabel: opt.text,
+                            multiSelect: Boolean(elementData.isMultiSelect),
+                            selector: '',
                             serialized: {
                                 id: syntheticId,
                                 role: 'option',
@@ -398,7 +543,12 @@ async function handleAutoFillClick() {
                                 type: '',
                                 required: false,
                                 currentValue: '',
-                                description: `Option for ${dropdownLabel}`
+                                description: `Option for ${dropdownLabel}`,
+                                context: '',
+                                groupLabel: dropdownLabel,
+                                optionLabel: opt.text,
+                                multiSelect: Boolean(elementData.isMultiSelect),
+                                selector: ''
                             }
                         });
                     });
@@ -561,6 +711,10 @@ function isChoiceButton(button) {
  * Get implicit ARIA role for an element
  */
 function getImplicitRole(element) {
+    if (element?.isContentEditable) {
+        return 'textbox';
+    }
+
     const tag = element.tagName.toLowerCase();
     const type = element.type?.toLowerCase();
 
@@ -650,6 +804,97 @@ function getAccessibleDescription(element) {
 }
 
 /**
+ * Approximate best label using weighted heuristics
+ */
+function findBestLabel(element) {
+    const candidateScores = new Map();
+    const addCandidate = (text, score) => {
+        const cleaned = cleanText(text || '');
+        if (!cleaned) {
+            return;
+        }
+        const current = candidateScores.get(cleaned) || 0;
+        if (score > current) {
+            candidateScores.set(cleaned, score);
+        }
+    };
+
+    addCandidate(element.getAttribute('aria-label'), 100);
+
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+        labelledBy.split(/\s+/).forEach(id => {
+            const labelEl = document.getElementById(id);
+            if (labelEl) {
+                addCandidate(labelEl.textContent, 100);
+            }
+        });
+    }
+
+    if (element.id) {
+        const explicitLabel = document.querySelector(`label[for="${element.id}"]`);
+        if (explicitLabel) {
+            addCandidate(explicitLabel.textContent, 90);
+        }
+    }
+
+    const wrappedLabel = element.closest('label');
+    if (wrappedLabel) {
+        addCandidate(wrappedLabel.textContent, 90);
+    }
+
+    const datasetLabel = element.getAttribute('data-label') || element.getAttribute('data-question');
+    addCandidate(datasetLabel, 80);
+
+    const accessibleName = getAccessibleName(element);
+    addCandidate(accessibleName, 80);
+
+    const previousSibling = element.previousElementSibling;
+    if (previousSibling) {
+        addCandidate(previousSibling.textContent, 50);
+    }
+
+    // Wrapper text (div soup)
+    const wrapper = element.closest('.application-question, .question, .form-field, .form-group, .field-wrapper, [class*="question"], [class*="field"], [data-testid*="question"], [data-test*="question"]');
+    if (wrapper) {
+        addCandidate(wrapper.textContent, 60);
+    }
+
+    addCandidate(element.placeholder, 40);
+    addCandidate(element.getAttribute('title'), 35);
+
+    if (candidateScores.size === 0) {
+        return { label: '', score: 0 };
+    }
+
+    const [bestLabel, bestScore] = Array.from(candidateScores.entries())
+        .sort((a, b) => b[1] - a[1])[0];
+
+    return { label: bestLabel, score: bestScore };
+}
+
+/**
+ * Capture nearby context to help LLM understand unlabeled fields
+ */
+function getSurroundingContext(element, maxLength = 150) {
+    if (!element) {
+        return '';
+    }
+
+    const wrapper = element.closest('.application-question, .question, .form-field, .form-group, .field-wrapper, [class*="question"], [class*="field"], [data-testid*="question"], [data-test*="question"]') || element.parentElement;
+    if (!wrapper) {
+        return '';
+    }
+
+    const clone = wrapper.cloneNode(true);
+    clone.querySelectorAll('input, textarea, select, button, option').forEach(node => node.remove());
+    clone.querySelectorAll('script, style').forEach(node => node.remove());
+
+    const text = cleanText(clone.textContent || '');
+    return text.substring(0, maxLength);
+}
+
+/**
  * Extract A11y-enhanced form elements with Shadow DOM support
  * ENHANCED: Recursively walks DOM including Shadow DOM
  */
@@ -678,7 +923,8 @@ function extractA11yEnhancedElements() {
         '[role="option"]',      // Dropdown options (visible after pre-opening)
         '[role="radio"]',
         '[role="checkbox"]',
-        '[role="textbox"]'
+        '[role="textbox"]',
+        '[contenteditable="true"]'
     ];
 
     // Recursive function to walk DOM including Shadow DOM
@@ -738,42 +984,88 @@ function extractA11yEnhancedElements() {
                 }
             }
 
+            const hasValue = hasMeaningfulValue(el);
+            let computedRole = (el.getAttribute('role') || '').toLowerCase() || getImplicitRole(el);
+            const multiSelect = detectMultiSelect(el);
+            if (shouldForceComboboxRole(el) || multiSelect) {
+                computedRole = 'combobox';
+            }
+
+            const isCustomDropdown = (computedRole === 'combobox' || computedRole === 'listbox') &&
+                el.tagName.toLowerCase() !== 'select';
+
             // Skip pre-filled fields (except buttons) BUT keep custom dropdowns (combobox/listbox)
-            const rawRole = (el.getAttribute('role') || '').toLowerCase();
-            const isCustomDropdown = rawRole === 'combobox' || rawRole === 'listbox';
-            if (el.value && el.value.trim() && el.type !== 'button' && !isCustomDropdown) {
+            if (hasValue && el.type !== 'button' && !isCustomDropdown) {
                 skippedReasons.preFilled++;
                 console.log(`${indent}[AutoFill] Skipping (pre-filled): ${el.tagName} ${el.type || ''} value="${el.value.substring(0, 20)}"`);
                 return;
             }
 
             // Get semantic info
-            const computedRole = el.getAttribute('role') || getImplicitRole(el);
-            let computedName = getAccessibleName(el);
+            const { label: scoredLabel, score: labelScore } = findBestLabel(el);
+            const needsContext = labelScore < 70;
+            let contextSnippet = needsContext ? getSurroundingContext(el) : '';
+            const groupLabel = getGroupLegendLabel(el);
+            let optionLabel = '';
+            const roleLower = (computedRole || '').toLowerCase();
+            const isChoiceControl = ['radio', 'checkbox', 'option'].includes(roleLower) ||
+                el.type === 'radio' || el.type === 'checkbox';
+            if (isChoiceControl) {
+                optionLabel = getChoiceOptionLabel(el);
+                const normalizedGroup = normalizeText(groupLabel);
+                if (optionLabel && normalizedGroup && normalizeText(optionLabel) === normalizedGroup) {
+                    const fallbackValue = cleanText(
+                        el.value ||
+                        el.getAttribute('data-value') ||
+                        el.getAttribute('aria-label') ||
+                        ''
+                    );
+                    if (fallbackValue && normalizeText(fallbackValue) !== normalizedGroup) {
+                        optionLabel = fallbackValue;
+                    } else {
+                        optionLabel = '';
+                    }
+                }
+                if (!optionLabel && scoredLabel && (!normalizedGroup || normalizeText(scoredLabel) !== normalizedGroup)) {
+                    optionLabel = scoredLabel;
+                }
+            }
 
             // SHADOW DOM HOST FIX:
             // If we're on a custom element host (has shadowRoot) and no name found,
             // try to get label from host's own attributes
-            if (!computedName && el.shadowRoot) {
-                computedName = cleanText(
+            let computedName = scoredLabel;
+            if ((!computedName || computedName === 'Unknown Field') && el.shadowRoot) {
+                const shadowLabel = cleanText(
                     el.getAttribute('label') ||
                     el.getAttribute('placeholder') ||
                     el.getAttribute('aria-label') ||
                     ''
                 );
-                if (computedName) {
+                if (shadowLabel) {
+                    computedName = shadowLabel;
                     console.log(`${indent}[AutoFill] Found label on Shadow DOM host: "${computedName}"`);
                 }
             }
 
-            // Skip if still no name
-            if (!computedName || computedName === 'Unknown Field') {
+            if ((!computedName || computedName === 'Unknown Field') && contextSnippet) {
+                console.log(`${indent}[AutoFill] Using context snippet for unlabeled field`);
+            }
+
+            if (!computedName && !contextSnippet) {
                 skippedReasons.noLabel++;
-                console.log(`${indent}[AutoFill] Skipping (no label): ${el.tagName} ${el.type || ''} id=${el.id || 'none'}`);
+                console.log(`${indent}[AutoFill] Skipping (no label/context): ${el.tagName} ${el.type || ''} id=${el.id || 'none'}`);
                 return;
             }
 
-            console.log(`${indent}[AutoFill] ✓ Found: ${computedRole} "${computedName}" (${el.tagName}${el.type ? ':' + el.type : ''})`);
+            let finalLabel = computedName || contextSnippet || 'Unknown Field';
+            if (groupLabel && isChoiceControl) {
+                finalLabel = optionLabel
+                    ? `${groupLabel} (${optionLabel})`
+                    : groupLabel;
+            }
+
+            console.log(`${indent}[AutoFill] ✓ Found: ${computedRole} "${finalLabel}" (${el.tagName}${el.type ? ':' + el.type : ''})`);
 
             elements.push({
                 tag: el.tagName.toLowerCase(),
@@ -784,8 +1076,13 @@ function extractA11yEnhancedElements() {
                 value: el.value || '',
                 required: el.required || false,
                 a11yRole: computedRole,
-                a11yName: computedName,
+                a11yName: finalLabel,
                 a11yDescription: getAccessibleDescription(el),
+                context: contextSnippet || '',
+                groupLabel: groupLabel || '',
+                optionLabel: optionLabel || '',
+                isMultiSelect: multiSelect,
+                labelScore,
                 element: el  // Store DOM reference
             });
         });
@@ -839,11 +1136,18 @@ function buildElementRegistry(elements) {
             }
         }
 
+        const selector = domElementToStore ? generateSelector(domElementToStore) : '';
+
         // Store the mapping
         elementRegistry.set(id, {
             domElement: domElementToStore,  // Now points to actual input (not host)
             a11yName: elementData.a11yName,
             a11yRole: elementData.a11yRole,
+            context: elementData.context || '',
+            groupLabel: elementData.groupLabel || '',
+            optionLabel: elementData.optionLabel || '',
+            multiSelect: Boolean(elementData.isMultiSelect),
+            selector,
             // For serialization to backend
             serialized: {
                 id: id,
@@ -852,13 +1156,19 @@ function buildElementRegistry(elements) {
                 type: elementData.type,
                 required: elementData.required,
                 currentValue: elementData.value,
-                description: elementData.a11yDescription
+                description: elementData.a11yDescription,
+                context: elementData.context || '',
+                groupLabel: elementData.groupLabel || '',
+                optionLabel: elementData.optionLabel || '',
+                multiSelect: Boolean(elementData.isMultiSelect),
+                selector
             }
         });
 
         // Attach registry metadata back onto element data for later lookups
         elementData.elementId = id;
         elementData.domRef = domElementToStore;
+        elementData.selector = selector;
     });
 
     return Array.from(elementRegistry.values()).map(v => v.serialized);
@@ -978,6 +1288,291 @@ function cleanText(text) {
         .trim();
 }
 
+function normalizeText(text) {
+    return cleanText(text || '').toLowerCase();
+}
+
+function escapeForAttribute(value) {
+    if (!value) {
+        return '';
+    }
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+        return window.CSS.escape(value);
+    }
+    return value.replace(/["\\]/g, '\\$&');
+}
+
+function textMatches(target, candidate) {
+    const normalizedTarget = normalizeText(target);
+    const normalizedCandidate = normalizeText(candidate);
+    if (!normalizedTarget || !normalizedCandidate) {
+        return false;
+    }
+    return normalizedTarget === normalizedCandidate ||
+        normalizedCandidate.includes(normalizedTarget) ||
+        normalizedTarget.includes(normalizedCandidate);
+}
+
+function isGenericPlaceholder(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+        return false;
+    }
+    return GENERIC_PLACEHOLDER_PATTERNS.some(pattern => pattern.test(normalized));
+}
+
+function getBooleanCategory(value) {
+    const normalized = normalizeText(value);
+    if (!normalized) {
+        return null;
+    }
+    if (YES_VALUE_SET.has(normalized)) {
+        return 'yes';
+    }
+    if (NO_VALUE_SET.has(normalized)) {
+        return 'no';
+    }
+    return null;
+}
+
+function hasMeaningfulValue(element) {
+    if (!element || element.type === 'button') {
+        return false;
+    }
+
+    const controlType = (element.type || element.getAttribute('type') || '').toLowerCase();
+    if (controlType === 'checkbox' || controlType === 'radio') {
+        return false;
+    }
+
+    const tag = element.tagName.toLowerCase();
+    const rawValue = element.value ?? '';
+
+    if (!rawValue.trim()) {
+        return false;
+    }
+
+    if (isGenericPlaceholder(rawValue)) {
+        return false;
+    }
+
+    if (tag === 'select') {
+        const selectedOption = element.options?.[element.selectedIndex];
+        if (selectedOption) {
+            const optionText = cleanText(selectedOption.textContent || '');
+            if (!optionText) {
+                return false;
+            }
+            if (isGenericPlaceholder(optionText) || isGenericPlaceholder(selectedOption.value)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+function shouldForceComboboxRole(element) {
+    if (!element) {
+        return false;
+    }
+
+    const explicitRole = (element.getAttribute('role') || '').toLowerCase();
+    if (explicitRole === 'combobox' || explicitRole === 'listbox') {
+        return true;
+    }
+
+    const tag = element.tagName?.toLowerCase();
+    if (tag === 'select') {
+        return false;
+    }
+
+    const ariaHasPopup = (element.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (ariaHasPopup === 'listbox' || ariaHasPopup === 'tree') {
+        return true;
+    }
+
+    const ariaAutocomplete = (element.getAttribute('aria-autocomplete') || '').toLowerCase();
+    if (ariaAutocomplete === 'list' || ariaAutocomplete === 'both') {
+        return true;
+    }
+
+    const ariaControls = element.getAttribute('aria-controls');
+    if (ariaControls) {
+        const controlled = document.getElementById(ariaControls);
+        if (controlled) {
+            const controlledRole = (controlled.getAttribute('role') || '').toLowerCase();
+            if (controlledRole === 'listbox' || controlledRole === 'tree') {
+                return true;
+            }
+        }
+    }
+
+    const automationId = (element.getAttribute('data-automation-id') || '').toLowerCase();
+    if (automationId.includes('multiselect') || automationId.includes('select') || automationId.includes('autocomplete')) {
+        return true;
+    }
+
+    return false;
+}
+
+function detectMultiSelect(element) {
+    if (!element) {
+        return false;
+    }
+
+    if (element.tagName?.toLowerCase() === 'select' && element.multiple) {
+        return true;
+    }
+
+    if ((element.getAttribute('aria-multiselectable') || '').toLowerCase() === 'true') {
+        return true;
+    }
+
+    const automationId = (element.getAttribute('data-automation-id') || '').toLowerCase();
+    if (automationId.includes('multiselect')) {
+        return true;
+    }
+
+    const ownerId = element.getAttribute('aria-owns') || element.getAttribute('aria-controls');
+    if (ownerId) {
+        const ownedNode = document.getElementById(ownerId);
+        if (ownedNode && (ownedNode.getAttribute('aria-multiselectable') || '').toLowerCase() === 'true') {
+            return true;
+        }
+    }
+
+    const multiselectContainer = element.closest('[aria-multiselectable="true"], [data-automation-id*="multiSelect"]');
+    return Boolean(multiselectContainer);
+}
+
+function getGroupLegendLabel(element) {
+    if (!element) {
+        return '';
+    }
+
+    const fieldset = element.closest('fieldset');
+    if (fieldset) {
+        const legend = fieldset.querySelector('legend');
+        const legendText = cleanText(legend?.textContent || '');
+        if (legendText) {
+            return legendText;
+        }
+    }
+
+    const ariaGroup = element.closest('[role="group"], [role="radiogroup"], [data-automation-id*="group"]');
+    if (ariaGroup) {
+        const ariaLabel = cleanText(ariaGroup.getAttribute('aria-label') || '');
+        if (ariaLabel) {
+            return ariaLabel;
+        }
+
+        const labelledBy = ariaGroup.getAttribute('aria-labelledby');
+        if (labelledBy) {
+            const ids = labelledBy.split(/\s+/);
+            for (const id of ids) {
+                const labelNode = document.getElementById(id);
+                const nodeText = cleanText(labelNode?.textContent || '');
+                if (nodeText) {
+                    return nodeText;
+                }
+            }
+        }
+
+        const groupLegend = ariaGroup.querySelector('legend');
+        const groupLegendText = cleanText(groupLegend?.textContent || '');
+        if (groupLegendText) {
+            return groupLegendText;
+        }
+    }
+
+    const wrapper = element.closest('[class*="question"], [class*="form-group"], [data-testid*="question"], [data-test*="question"]');
+    if (wrapper) {
+        const heading = wrapper.querySelector('legend, h2, h3, .question-label, [data-test*="label"]');
+        const headingText = cleanText(heading?.textContent || '');
+        if (headingText) {
+            return headingText;
+        }
+    }
+
+    return '';
+}
+
+function getChoiceOptionLabel(element) {
+    if (!element) {
+        return '';
+    }
+
+    const wrappedLabel = element.closest('label');
+    if (wrappedLabel) {
+        const text = cleanText(wrappedLabel.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    if (element.id) {
+        const explicitLabel = document.querySelector(`label[for="${element.id}"]`);
+        const text = cleanText(explicitLabel?.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const ariaLabel = cleanText(element.getAttribute('aria-label') || '');
+    if (ariaLabel) {
+        return ariaLabel;
+    }
+
+    const labelledBy = element.getAttribute('aria-labelledby');
+    if (labelledBy) {
+        const ids = labelledBy.split(/\s+/);
+        for (const id of ids) {
+            const labelEl = document.getElementById(id);
+            const text = cleanText(labelEl?.textContent || '');
+            if (text) {
+                return text;
+            }
+        }
+    }
+
+    const sibling = element.nextElementSibling;
+    if (sibling) {
+        const text = cleanText(sibling.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const prev = element.previousElementSibling;
+    if (prev) {
+        const text = cleanText(prev.textContent || '');
+        if (text) {
+            return text;
+        }
+    }
+
+    const dataValue = element.getAttribute('data-value') ||
+        element.getAttribute('data-text') ||
+        element.getAttribute('value');
+    if (dataValue) {
+        return cleanText(dataValue);
+    }
+
+    return '';
+}
+
+function isNodeVisible(node) {
+    if (!node) {
+        return false;
+    }
+    if (node.offsetParent !== null) {
+        return true;
+    }
+    const rect = node.getBoundingClientRect?.();
+    return Boolean(rect && rect.width > 0 && rect.height > 0);
+}
+
 /**
  * Find element using fallback strategies when primary selector fails
  * ENHANCED: Uses findLabelForElement() and type matching
@@ -1090,10 +1685,8 @@ async function executeActions(actions) {
 
         // High confidence - execute automatically
         try {
-            const elementData = elementRegistry.get(action.elementId);
-
+            const elementData = await ensureLiveElementData(action);
             if (!elementData) {
-                console.error(`[AutoFill] Element not found: ${action.elementId}`);
                 continue;
             }
 
@@ -1104,10 +1697,7 @@ async function executeActions(actions) {
 
             // Execute based on interaction type (more robust than role-based)
             if (action.interaction === 'fill_text') {
-                element.value = action.value;
-                element.dispatchEvent(new Event('input', { bubbles: true }));
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-                element.dispatchEvent(new Event('blur', { bubbles: true }));
+                setNativeValue(element, action.value ?? '');
                 console.log(`✓ Filled: ${action.label}`);
             }
             else if (action.interaction === 'select_option') {
@@ -1116,9 +1706,7 @@ async function executeActions(actions) {
                     await selectOption(element, action.value, action.label);
                 } else {
                     console.warn(`[AutoFill] select_option called on ${element.tagName}, treating as fill_text`);
-                    element.value = action.value;
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                    setNativeValue(element, action.value ?? '');
                 }
             }
             else if (action.interaction === 'check') {
@@ -1141,6 +1729,264 @@ async function executeActions(actions) {
             console.error(`[AutoFill] Error: ${action.label}:`, error);
         }
     }
+}
+
+function focusAndOpenDropdown(element) {
+    try {
+        element.focus?.();
+        element.click?.();
+        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        element.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    } catch (err) {
+        console.warn('[AutoFill] Failed to open dropdown via element interactions', err);
+    }
+
+    const toggleSelectors = [
+        'button[aria-haspopup="listbox"]',
+        'button[aria-expanded]',
+        '[role="button"][aria-haspopup="listbox"]',
+        '.select-arrow',
+        '.ant-select-arrow',
+        '.MuiSelect-icon',
+        '.chakra-select__icon'
+    ];
+
+    const immediateToggle = element.nextElementSibling && toggleSelectors.some(sel => element.nextElementSibling.matches(sel))
+        ? element.nextElementSibling
+        : null;
+
+    let toggle = immediateToggle;
+    if (!toggle) {
+        const wrapper = element.closest('[role="combobox"], .select, .dropdown, [class*="select"], [class*="Dropdown"]');
+        if (wrapper) {
+            toggle = toggleSelectors
+                .map(sel => wrapper.querySelector(sel))
+                .find(Boolean);
+        }
+    }
+
+    if (toggle && toggle !== element) {
+        toggle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        toggle.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        toggle.click();
+    }
+}
+
+function getVisibleOptionNodes(root = document) {
+    const nodes = new Set();
+    DROPDOWN_OPTION_SELECTORS.forEach(selector => {
+        root.querySelectorAll(selector).forEach(node => {
+            if (isNodeVisible(node)) {
+                nodes.add(node);
+            }
+        });
+    });
+    return Array.from(nodes);
+}
+
+function collectOptionNodes() {
+    return getVisibleOptionNodes(document);
+}
+
+function buildOptionDescriptor(node) {
+    const text = cleanText(
+        node.getAttribute('data-display') ||
+        node.getAttribute('data-text') ||
+        node.getAttribute('aria-label') ||
+        node.textContent ||
+        ''
+    );
+    const value = cleanText(
+        node.getAttribute('data-value') ||
+        node.getAttribute('data-id') ||
+        node.getAttribute('data-option-value') ||
+        text
+    );
+
+    return {
+        element: node,
+        text: text || value,
+        value: value || text
+    };
+}
+
+function findMatchingOptionNode(targetText) {
+    const normalizedTarget = cleanText(targetText || '').toLowerCase();
+    if (!normalizedTarget) {
+        return null;
+    }
+
+    return collectOptionNodes().find(node => {
+        const candidates = [
+            node.getAttribute('data-text'),
+            node.getAttribute('data-display'),
+            node.getAttribute('data-value'),
+            node.getAttribute('aria-label'),
+            node.textContent
+        ].map(value => cleanText(value || '').toLowerCase()).filter(Boolean);
+
+        if (candidates.length === 0) {
+            return false;
+        }
+
+        return candidates.some(text => text === normalizedTarget || text.includes(normalizedTarget) || normalizedTarget.includes(text));
+    }) || null;
+}
+
+function getRadioGroupElements(element) {
+    if (!element) {
+        return [];
+    }
+
+    if (element.type === 'radio' && element.name) {
+        const escapedName = escapeForAttribute(element.name);
+        if (escapedName) {
+            return Array.from(document.querySelectorAll(`input[type="radio"][name="${escapedName}"]`));
+        }
+    }
+
+    const group = element.closest?.('[role="radiogroup"], [role="group"], [data-testid*="radio"], [data-test*="radio"]');
+    if (group) {
+        const radios = group.querySelectorAll('input[type="radio"], [role="radio"]');
+        if (radios.length > 0) {
+            return Array.from(radios);
+        }
+    }
+
+    if (element.type === 'radio' || element.getAttribute?.('role') === 'radio') {
+        return [element];
+    }
+
+    return [];
+}
+
+function getRadioCandidateTexts(radio) {
+    if (!radio) {
+        return [];
+    }
+
+    const texts = [];
+    const attributeSources = ['aria-label', 'data-label', 'data-value', 'data-text', 'title'];
+    attributeSources.forEach(attr => {
+        const value = radio.getAttribute?.(attr);
+        if (value) {
+            texts.push(value);
+        }
+    });
+
+    const attrValue = radio.getAttribute?.('value') ?? radio.value;
+    if (attrValue) {
+        texts.push(attrValue);
+    }
+
+    if (radio.id) {
+        const explicitLabel = document.querySelector(`label[for="${radio.id}"]`);
+        if (explicitLabel) {
+            texts.push(explicitLabel.textContent);
+        }
+    }
+
+    const wrappingLabel = radio.closest?.('label');
+    if (wrappingLabel) {
+        texts.push(wrappingLabel.textContent);
+    }
+
+    if (radio.textContent) {
+        texts.push(radio.textContent);
+    }
+
+    if (radio.nextElementSibling) {
+        texts.push(radio.nextElementSibling.textContent);
+    }
+
+    return texts.map(cleanText).filter(Boolean);
+}
+
+function findMatchingRadioOption(element, targetValue) {
+    const normalizedTarget = normalizeText(targetValue);
+    if (!element || !normalizedTarget) {
+        return null;
+    }
+
+    const desiredBoolean = getBooleanCategory(targetValue);
+    const candidates = getRadioGroupElements(element);
+
+    for (const candidate of candidates) {
+        const texts = getRadioCandidateTexts(candidate);
+        if (texts.some(text => textMatches(targetValue, text))) {
+            return candidate;
+        }
+
+        if (desiredBoolean) {
+            const candidateBoolean = getBooleanCategory(candidate.getAttribute?.('data-value')) ||
+                getBooleanCategory(candidate.value) ||
+                texts.map(getBooleanCategory).find(Boolean);
+            if (candidateBoolean && candidateBoolean === desiredBoolean) {
+                return candidate;
+            }
+        }
+    }
+
+    return null;
+}
+
+async function waitForDropdownOption(targetText, timeout = 2500) {
+    const immediate = findMatchingOptionNode(targetText);
+    if (immediate) {
+        return immediate;
+    }
+
+    return new Promise(resolve => {
+        const start = Date.now();
+        const observer = new MutationObserver(() => {
+            const match = findMatchingOptionNode(targetText);
+            if (match) {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                resolve(match);
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        const pollInterval = setInterval(() => {
+            const match = findMatchingOptionNode(targetText);
+            if (match) {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                resolve(match);
+            } else if (Date.now() - start > timeout) {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                resolve(null);
+            }
+        }, 120);
+    });
+}
+
+async function universalDropdownFill(element, value, label) {
+    const targetText = (value || '').trim();
+    focusAndOpenDropdown(element);
+
+    const typingTarget = element.matches('input, textarea')
+        ? element
+        : element.querySelector?.('input, textarea');
+
+    if (typingTarget && targetText) {
+        setNativeValue(typingTarget, targetText);
+    } else if (targetText && element.isContentEditable) {
+        element.textContent = targetText;
+    }
+
+    const optionNode = await waitForDropdownOption(targetText);
+    if (optionNode) {
+        clickElement(optionNode, targetText, label || targetText);
+        return true;
+    }
+
+    console.warn(`[AutoFill] universalDropdownFill: Option "${targetText}" not found for ${label}`);
+    return false;
 }
 
 /**
@@ -1178,29 +2024,26 @@ async function selectOption(element, value, label) {
         }
 
         if (match) {
-            element.value = match.value;
-            element.dispatchEvent(new Event('change', { bubbles: true }));
-            element.dispatchEvent(new Event('input', { bubbles: true }));
-            element.dispatchEvent(new Event('blur', { bubbles: true }));
+            setNativeValue(element, match.value);
             console.log(`✓ Selected: ${label} = ${match.text}`);
         } else {
             console.warn(`[AutoFill] No matching option for: ${label} = "${value}"`);
             console.warn(`Available: ${options.map(o => o.text).join(', ')}`);
         }
+        return;
     }
 
     // Case 2: Input with datalist
-    else if (tagName === 'input' && element.hasAttribute('list')) {
-        element.value = value;
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-        element.dispatchEvent(new Event('blur', { bubbles: true }));
+    if (tagName === 'input' && element.hasAttribute('list')) {
+        setNativeValue(element, value ?? '');
         console.log(`✓ Filled datalist: ${label} = ${value}`);
+        return;
     }
 
-    // Case 3: Unexpected - log warning
-    else {
-        console.warn(`[AutoFill] selectOption() called on non-select element: ${tagName}`);
+    // Case 3: Custom dropdowns / combos
+    const success = await universalDropdownFill(element, value, label);
+    if (!success) {
+        setNativeValue(element, value ?? '');
     }
 }
 
@@ -1210,22 +2053,15 @@ async function selectOption(element, value, label) {
 function clickElement(element, value, label) {
     // For radio buttons, try to find the specific option by value
     if (element.type === 'radio') {
-        const radioName = element.name;
-        const radios = document.querySelectorAll(`input[type="radio"][name="${radioName}"]`);
-        let targetRadio = element;
-
-        for (const radio of radios) {
-            if (radio.value.toLowerCase() === value.toLowerCase()) {
-                targetRadio = radio;
-                break;
-            }
-            const radioLabel = document.querySelector(`label[for="${radio.id}"]`);
-            if (radioLabel && radioLabel.textContent.toLowerCase().trim() === value.toLowerCase()) {
-                targetRadio = radio;
-                break;
-            }
+        const targetRadio = findMatchingRadioOption(element, value);
+        if (targetRadio) {
+            element = targetRadio;
         }
-        element = targetRadio;
+    } else if (element.getAttribute && element.getAttribute('role') === 'radio') {
+        const targetRadio = findMatchingRadioOption(element, value);
+        if (targetRadio) {
+            element = targetRadio;
+        }
     }
 
     // For choice buttons, find the specific button by text
@@ -1269,18 +2105,14 @@ function clickElement(element, value, label) {
             const postbackField = document.getElementById(`${baseId}-postback`);
 
             if (postbackField) {
-                postbackField.value = optionValue;
-                postbackField.dispatchEvent(new Event('change', { bubbles: true }));
-                postbackField.dispatchEvent(new Event('input', { bubbles: true }));
+                setNativeValue(postbackField, optionValue);
                 console.log(`✓ Updated postback field ${baseId}-postback = "${optionValue}"`);
             }
 
             // Also update the display input
             const displayInput = document.getElementById(`${baseId}-edit`);
             if (displayInput) {
-                displayInput.value = element.textContent.trim();
-                displayInput.dispatchEvent(new Event('input', { bubbles: true }));
-                displayInput.dispatchEvent(new Event('change', { bubbles: true }));
+                setNativeValue(displayInput, element.textContent.trim());
             }
         }
     }
@@ -1339,10 +2171,7 @@ async function executeActionsOld(actions) {
             // Execute based on interaction type (using improved tryFillField logic)
             switch (action.interaction) {
                 case 'fill_text':
-                    element.value = action.value;
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                    element.dispatchEvent(new Event('blur', { bubbles: true }));
+                    setNativeValue(element, action.value ?? '');
                     console.log(`✓ Filled: ${action.label} = ${action.value}`);
                     break;
 
@@ -1456,10 +2285,7 @@ async function executeActionsOld(actions) {
                         }
 
                         if (match) {
-                            element.value = match.value;
-                            element.dispatchEvent(new Event('change', { bubbles: true }));
-                            element.dispatchEvent(new Event('input', { bubbles: true }));
-                            element.dispatchEvent(new Event('blur', { bubbles: true }));
+                            setNativeValue(element, match.value);
                             console.log(`✓ Selected: ${action.label} = ${match.text}`);
                         } else {
                             console.warn(`[AutoFill Agent] No matching option for: ${action.label} = "${action.value}"`);
@@ -1468,16 +2294,11 @@ async function executeActionsOld(actions) {
                         }
                     } else if (element.tagName === 'INPUT' && element.hasAttribute('list')) {
                         // Input with datalist
-                        element.value = action.value;
-                        element.dispatchEvent(new Event('input', { bubbles: true }));
-                        element.dispatchEvent(new Event('change', { bubbles: true }));
-                        element.dispatchEvent(new Event('blur', { bubbles: true }));
+                        setNativeValue(element, action.value ?? '');
                         console.log(`✓ Filled datalist: ${action.label} = ${action.value}`);
                     } else {
                         // Custom dropdown fallback
-                        element.value = action.value;
-                        element.dispatchEvent(new Event('input', { bubbles: true }));
-                        element.dispatchEvent(new Event('change', { bubbles: true }));
+                        setNativeValue(element, action.value ?? '');
                         console.log(`✓ Filled: ${action.label} = ${action.value}`);
                     }
                     break;
@@ -1758,10 +2579,7 @@ function executeManualAction(element, value, interaction, role) {
         console.log(`[AutoFill] Executing manual action: ${interaction} with value: ${value}`);
 
         if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
-            element.value = value;
-            element.dispatchEvent(new Event('input', { bubbles: true }));
-            element.dispatchEvent(new Event('change', { bubbles: true }));
-            element.dispatchEvent(new Event('blur', { bubbles: true }));
+            setNativeValue(element, value ?? '');
             console.log(`✓ Filled: ${value}`);
         }
         else if (role === 'combobox' || role === 'listbox') {
@@ -1963,14 +2781,66 @@ function extractCompanyName() {
     return patterns.find(p => p) || 'Unknown';
 }
 
-// Inject button when page loads
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(injectAutoFillButton, 1000);
+/**
+ * Observe DOM mutations and inject the button once a form/input appears
+ */
+function startAutoFillButtonObserver() {
+    const targetSelectors = [
+        'form',
+        'input:not([type="hidden"])',
+        'textarea',
+        'select',
+        '[role="textbox"]',
+        '[role="combobox"]',
+        '[role="listbox"]'
+    ].join(',');
+
+    const maybeInject = () => {
+        if (autoFillButton || (window.location.hostname === 'localhost' && window.location.port === '5173')) {
+            return true;
+        }
+
+        if (!document.body) {
+            return false;
+        }
+
+        const hasFormControls = document.querySelector(targetSelectors);
+        if (hasFormControls) {
+            injectAutoFillButton();
+            return true;
+        }
+
+        return false;
+    };
+
+    if (maybeInject()) {
+        return;
+    }
+
+    const observer = new MutationObserver(() => {
+        if (maybeInject()) {
+            observer.disconnect();
+        }
     });
-} else {
-    setTimeout(injectAutoFillButton, 1000);
+
+    const startObserving = () => {
+        if (!document.body) {
+            return false;
+        }
+        observer.observe(document.body, { childList: true, subtree: true });
+        return true;
+    };
+
+    if (!startObserving()) {
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!maybeInject()) {
+                startObserving();
+            }
+        });
+    }
 }
+
+startAutoFillButtonObserver();
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
