@@ -7,6 +7,7 @@ from typing import List, Optional
 import os
 import json
 import time
+import re
 from urllib.parse import quote
 
 from models.application import (
@@ -377,6 +378,240 @@ async def prepare_interview_for_job(
                 detail="Interview tables not found. Please run the interview migration: python backend/scripts/run_interview_migration.py"
             )
         raise HTTPException(status_code=500, detail=f"Failed to start interview session: {str(e)}")
+
+
+@router.post("/{job_id}/prepare/cv/stream")
+async def generate_tailored_cv_stream(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: PostgresClient = Depends(get_db)
+):
+    """
+    Streaming version of CV generation that sends step updates in real-time via Server-Sent Events (SSE).
+    Frontend can subscribe to this stream to show progress as steps complete.
+    """
+    print(f"📥 Received CV generation stream request for job_id={job_id}, user_id={current_user.get('id')}")
+    
+    async def event_generator():
+        try:
+            # Validate job exists
+            job = await db.fetch_one(
+                "SELECT id, title, company, description FROM jobs WHERE id = $1",
+                job_id
+            )
+            
+            if not job:
+                error_payload = {"type": "error", "error": "Job not found. Please select a valid job."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Validate job has description
+            job_description = job.get('description', '').strip()
+            if not job_description:
+                error_payload = {"type": "error", "error": "Job description is missing. Cannot generate tailored CV without job details."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Get user's CV profile
+            cv_profile = await db.fetch_one(
+                "SELECT id, raw_text, parsed_data, updated_at FROM cv_profiles WHERE user_id = $1",
+                current_user["id"]
+            )
+            
+            if not cv_profile:
+                error_payload = {"type": "error", "error": "CV profile not found. Please upload your CV in the Profile page first."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Parse CV data
+            parsed_data = cv_profile.get("parsed_data")
+            if isinstance(parsed_data, str):
+                try:
+                    parsed_data = json.loads(parsed_data)
+                except json.JSONDecodeError as e:
+                    error_payload = {"type": "error", "error": f"CV data is corrupted. Please re-upload your CV. Error: {str(e)}"}
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+            
+            if not parsed_data:
+                error_payload = {"type": "error", "error": "CV data is empty or not properly parsed. Please re-upload your CV."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Validate CV has essential data
+            has_work_experience = bool(parsed_data.get("work_experience"))
+            has_education = bool(parsed_data.get("education"))
+            has_skills = bool(parsed_data.get("skills"))
+            
+            if not (has_work_experience or has_education or has_skills):
+                error_payload = {"type": "error", "error": "CV data is incomplete. Please ensure your CV contains work experience, education, or skills."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            try:
+                from backend.services.cv.agentic_cv_service import get_agentic_cv_service
+            except ImportError:
+                from services.cv.agentic_cv_service import get_agentic_cv_service
+            cv_service = get_agentic_cv_service()
+            
+            print(f"🚀 Starting CV generation stream for job_id={job_id}, user_id={current_user['id']}")
+            # Send initial keep-alive
+            yield ": keep-alive\n\n"
+            
+            tailored_cv_id = None
+            is_new = False
+            final_result = None
+            
+            print("📡 Starting to stream CV generation updates...")
+            # Stream CV generation
+            async for update in cv_service.generate_tailored_cv_html_stream(
+                cv_parsed_data=parsed_data,
+                job_description=job_description,
+                job_title=job.get('title', ''),
+                company=job.get('company', ''),
+                max_attempts=3
+            ):
+                # Ensure update is a dictionary
+                if not isinstance(update, dict):
+                    print(f"⚠️ Warning: Received non-dict update: {type(update)}, value: {update}")
+                    # Convert to error dict if it's a string
+                    if isinstance(update, str):
+                        update = {"type": "error", "error": update}
+                    else:
+                        update = {"type": "error", "error": str(update)}
+                
+                # Send step updates
+                update_type = update.get("type")
+                print(f"📤 Sending update: {update_type}")
+                
+                if update_type in ["step_start", "step_complete"]:
+                    update_json = json.dumps(update)
+                    step_name = update.get('step', update.get('step_data', {}).get('step', 'unknown'))
+                    print(f"   Step update: {step_name}")
+                    yield f"data: {update_json}\n\n"
+                elif update_type == "complete":
+                    # Final result - store CV and send completion
+                    final_result = update
+                    html_content = update.get("html_content")
+                    
+                    if html_content and html_content.strip():
+                        # Store CV in database
+                        tailored_data = {
+                            "html_content": html_content,
+                            "format": "html",
+                            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "job_title": job.get('title'),
+                            "company": job.get('company'),
+                            "version": "1.0"
+                        }
+                        
+                        emphasis_notes = update.get("emphasis_notes", "")
+                        
+                        # Check if tailored CV already exists
+                        existing_cv = await db.fetch_one(
+                            "SELECT id, created_at FROM tailored_cvs WHERE user_id = $1 AND job_id = $2",
+                            current_user["id"], job_id
+                        )
+                        
+                        if existing_cv:
+                            await db.execute(
+                                """UPDATE tailored_cvs 
+                                   SET tailored_content = $1, emphasis_notes = $2, updated_at = NOW()
+                                   WHERE id = $3""",
+                                json.dumps(tailored_data),
+                                emphasis_notes,
+                                existing_cv["id"]
+                            )
+                            tailored_cv_id = existing_cv["id"]
+                            is_new = False
+                        else:
+                            tailored_cv_id = await db.fetch_val(
+                                """INSERT INTO tailored_cvs (user_id, job_id, original_cv_profile_id, tailored_content, emphasis_notes, created_at, updated_at)
+                                   VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                                   RETURNING id""",
+                                current_user["id"],
+                                job_id,
+                                cv_profile["id"],
+                                json.dumps(tailored_data),
+                                emphasis_notes
+                            )
+                            is_new = True
+                        
+                        # Send completion with full result
+                        completion_data = {
+                            "type": "complete",
+                            "tailored_cv_id": str(tailored_cv_id),
+                            "job_id": job_id,
+                            "job_title": job.get("title"),
+                            "company": job.get("company"),
+                            "html_content": html_content,
+                            "emphasis_notes": emphasis_notes,
+                            "original_cv_id": str(cv_profile["id"]),
+                            "redirect_url": f"/applications/prepare/cv/{tailored_cv_id}",
+                            "success": True,
+                            "is_new": is_new,
+                            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "agent_steps": update.get("agent_steps", []),
+                            "refinement_rounds": update.get("refinement_rounds", 0),
+                            "final_quality_score": update.get("final_quality_score", 0)
+                        }
+                        completion_json = json.dumps(completion_data)
+                        print(f"✅ Sending completion with CV ID: {tailored_cv_id}")
+                        yield f"data: {completion_json}\n\n"
+                    else:
+                        error_json = json.dumps({'type': 'error', 'error': 'CV generation completed but no HTML content was produced'})
+                        print("❌ No HTML content produced")
+                        yield f"data: {error_json}\n\n"
+                elif update_type == "error":
+                    error_json = json.dumps(update)
+                    error_message = update.get('error', 'Unknown error') if isinstance(update, dict) else str(update)
+                    print(f"❌ Sending error: {error_message}")
+                    yield f"data: {error_json}\n\n"
+                else:
+                    # Unknown update type, log and send as-is
+                    print(f"⚠️ Unknown update type: {update_type}, sending as-is")
+                    update_json = json.dumps(update)
+                    yield f"data: {update_json}\n\n"
+            
+            print("🏁 Stream completed, sending [DONE]")
+            yield "data: [DONE]\n\n"
+            
+        except Exception as e:
+            print(f"❌ Error in CV generation stream: {e}")
+            import traceback
+            traceback.print_exc()
+            # Ensure we always send a proper dict
+            error_message = str(e) if e else "Unknown error occurred"
+            error_payload = {
+                "type": "error",
+                "error": error_message,
+                "agent_steps": []
+            }
+            try:
+                error_json = json.dumps(error_payload)
+                print(f"   Sending error payload: {error_json}")
+                yield f"data: {error_json}\n\n"
+            except Exception as json_error:
+                print(f"   Failed to serialize error payload: {json_error}")
+                # Fallback: send a simple error message
+                yield f"data: {json.dumps({'type': 'error', 'error': 'An error occurred during CV generation'})}\n\n"
+            yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @router.post("/{job_id}/prepare/cv", response_model=dict)
@@ -1290,6 +1525,11 @@ async def validate_edited_cv(
                 detail="html_content is required"
             )
         
+        # Check for very short content
+        text_length = len(re.sub(r'<[^>]+>', '', html_content))
+        if text_length < 100:
+            print(f"⚠️ WARNING: Very short CV content received ({text_length} chars) - may indicate significant deletions")
+        
         # Get CV and job info
         tailored_cv = await db.fetch_one(
             """SELECT tc.*, j.description as job_description, j.title as job_title, j.company
@@ -1314,7 +1554,7 @@ async def validate_edited_cv(
                 detail="Original CV profile not found"
             )
         
-        # Format CV text for validation
+        # Format CV text for validation - use COMPLETE profile data
         parsed_data = cv_profile.get("parsed_data")
         if isinstance(parsed_data, str):
             try:
@@ -1327,17 +1567,12 @@ async def validate_edited_cv(
         except ImportError:
             from services.cv.agentic_cv_service import get_agentic_cv_service
         cv_service = get_agentic_cv_service()
+        
+        # Format the complete original CV profile text for comparison
         cv_text = cv_service._format_cv_text_from_parsed_data(parsed_data)
         
-        # Use validation service
-        try:
-            from backend.services.cv.validation_service import get_cv_validation_service
-        except ImportError:
-            from services.cv.validation_service import get_cv_validation_service
-        validation_service = get_cv_validation_service()
-        
-        # Quick job analysis if needed
-        job_analysis = None
+        # Get job analysis for comprehensive validation
+        job_analysis = {}
         if tailored_cv.get("job_description"):
             try:
                 job_analysis_result = await cv_service._agent_step_analyze_job(
@@ -1347,20 +1582,89 @@ async def validate_edited_cv(
                 )
                 if job_analysis_result.get("success"):
                     job_analysis = job_analysis_result.get("analysis", {})
-            except:
-                pass
+            except Exception as e:
+                print(f"Warning: Failed to generate job analysis for validation: {e}")
+                # Continue with empty job_analysis - validation will still work
         
-        result = await validation_service.validate_edited_cv(
+        # Use comprehensive validation
+        validation_result = await cv_service._agent_step_validate_output(
             html_content=html_content,
-            original_cv_text=cv_text,
-            job_description=tailored_cv.get("job_description"),
+            cv_text=cv_text,
             job_analysis=job_analysis
         )
         
+        if not validation_result.get("success"):
+            raise Exception("Validation failed to return results")
+        
+        validation = validation_result.get("validation", {})
+        
+        # Combine critical and minor issues into issues array if not present
+        if not validation.get("issues"):
+            issues = []
+            if validation.get("critical_issues"):
+                issues.extend(validation.get("critical_issues", []))
+            if validation.get("minor_issues"):
+                issues.extend(validation.get("minor_issues", []))
+            if issues:
+                validation["issues"] = issues
+        
+        # Generate quality_feedback if missing (fallback)
+        if not validation.get("quality_feedback"):
+            quality_score = validation.get("quality_score", 0)
+            has_issues = len(validation.get("issues", [])) > 0
+            matches_job = validation.get("matches_job_requirements", True)
+            style_ok = validation.get("style_acceptable", True)
+            no_invented = validation.get("no_invented_content", True)
+            has_sections = validation.get("has_required_sections", True)
+            
+            feedback_parts = []
+            
+            # Strengths
+            if quality_score >= 9:
+                feedback_parts.append("Your CV demonstrates excellent quality with strong professional presentation.")
+            elif quality_score >= 8:
+                feedback_parts.append("Your CV shows good quality and effectively communicates your qualifications.")
+            elif quality_score >= 6:
+                feedback_parts.append("Your CV has a solid foundation with the essential elements in place.")
+            
+            if matches_job:
+                feedback_parts.append("The CV aligns well with the job requirements and highlights relevant qualifications.")
+            if style_ok:
+                feedback_parts.append("The professional styling and formatting create a polished, readable document.")
+            if has_sections:
+                feedback_parts.append("All required sections are present, providing a complete professional profile.")
+            if no_invented:
+                feedback_parts.append("The content accurately reflects your original CV information.")
+            
+            # Improvements
+            if not matches_job:
+                feedback_parts.append("The CV could be better tailored to match the specific job requirements and keywords.")
+            if not style_ok:
+                feedback_parts.append("Professional styling, alignment, and formatting need refinement to enhance visual appeal.")
+            if not has_sections:
+                feedback_parts.append("Some essential sections may be missing or incomplete, which could impact completeness.")
+            if not no_invented:
+                feedback_parts.append("CRITICAL: Some content may not match your original CV - please verify all information is accurate.")
+            if has_issues:
+                feedback_parts.append(f"There are {len(validation.get('issues', []))} specific issues that need attention to improve the CV's effectiveness.")
+            
+            # Guidance
+            if quality_score < 8:
+                feedback_parts.append("To improve, focus on aligning content more closely with job requirements, enhancing professional formatting, and ensuring all sections are complete and well-structured.")
+            elif has_issues:
+                feedback_parts.append("Address the identified issues systematically, starting with critical items, to elevate the CV to an excellent standard.")
+            else:
+                feedback_parts.append("Consider fine-tuning the content to better match job-specific keywords and strengthen the connection between your experience and the role requirements.")
+            
+            validation["quality_feedback"] = " ".join(feedback_parts[:8]) if feedback_parts else "CV validation completed. Review the issues and recommendations for specific improvements."
+        
+        # Ensure recommendations exist (even if empty)
+        if "recommendations" not in validation:
+            validation["recommendations"] = []
+        
         return {
             "success": True,
-            "validation": result.get("validation", {}),
-            "warning": result.get("warning")
+            "validation": validation
         }
     
     except HTTPException:

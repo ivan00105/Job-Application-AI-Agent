@@ -13,6 +13,9 @@ import { InterviewManagementPage } from './pages/InterviewManagementPage';
 import { TailoredCVPage } from './pages/TailoredCVPage';
 import { CoverLetterPage } from './pages/CoverLetterPage';
 import { MemoryManagementPage } from './pages/MemoryManagementPage';
+import { GameLibraryPage } from './pages/GameLibraryPage';
+import { GameSessionPage } from './pages/GameSessionPage';
+import { GameResultsPage } from './pages/GameResultsPage';
 import './index.css';
 
 function App() {
@@ -114,6 +117,30 @@ function App() {
             element={
               <ProtectedRoute>
                 <MemoryManagementPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/games"
+            element={
+              <ProtectedRoute>
+                <GameLibraryPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/games/session/:sessionId"
+            element={
+              <ProtectedRoute>
+                <GameSessionPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/games/results/:sessionId"
+            element={
+              <ProtectedRoute>
+                <GameResultsPage />
               </ProtectedRoute>
             }
           />

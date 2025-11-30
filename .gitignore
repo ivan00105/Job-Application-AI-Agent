@@ -73,6 +73,11 @@ backend/data/**
 coverage/
 .nyc_output/
 
+# Scripts (seed, test data, and admin tools)
+backend/scripts/seed/
+backend/scripts/tests/
+backend/scripts/admin-tools/
+
 # Misc
 *.pid
 *.seed

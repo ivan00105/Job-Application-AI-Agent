@@ -55,7 +55,7 @@ Install or provision the following before touching the repo:
 
    # Option B: helper script (wraps the same file)
    cd backend
-   python scripts/run_migration.py
+   python scripts/migrations/run_migration.py
    ```
 
 4. **Verify tables exist**
@@ -91,13 +91,13 @@ Install or provision the following before touching the repo:
 
 4. **Run database migrations (if you skipped the earlier section)**
    ```bash
-   python scripts/run_migration.py
+   python scripts/migrations/run_migration.py
    ```
 
 5. **Seed development data (optional but handy)**
    ```bash
-   python scripts/create_test_users.py
-   python scripts/seed_interview_questions.py
+   python scripts/admin-tools/create_test_users.py
+   python scripts/seed/seed_interview_questions.py
    ```
 
 6. **Start the API**

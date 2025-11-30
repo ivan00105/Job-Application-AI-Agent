@@ -6,7 +6,7 @@ import { Layout } from '../components/Layout';
 import { AgenticLoadingOverlay } from '../components/AgenticLoadingOverlay';
 import { JobCard } from '../components/JobCard';
 import { jobsAPI } from '../api/client';
-import { Search, MapPin, AlertCircle, X, Loader2, CheckCircle2, Sparkles, Clock } from 'lucide-react';
+import { Search, MapPin, AlertCircle, X, Loader2, CheckCircle2, Sparkles, Clock, Download } from 'lucide-react';
 import { applicationsAPI } from '../api/client';
 
 export const JobsPage = () => {
@@ -36,6 +36,10 @@ export const JobsPage = () => {
   const [generatingCV, setGeneratingCV] = useState(false);
   const [agentSteps, setAgentSteps] = useState<any[]>([]);
   const [currentStep, setCurrentStep] = useState<string | undefined>();
+
+  // Job scraping tracking
+  const [scraping, setScraping] = useState(false);
+  const [scrapingResult, setScrapingResult] = useState<any>(null);
 
   // Load jobs function (called manually or when filters change after initial search)
   const loadJobs = async (reset: boolean = true, searchQueryOverride?: string, locationQueryOverride?: string) => {
@@ -288,6 +292,13 @@ export const JobsPage = () => {
               { step: 'ai', status: 'completed', message: 'AI Analysis completed' },
               { step: 'match', status: 'completed', message: `Found ${data.total || 0} similar jobs` }
             ]);
+          } else if (source === 'cached') {
+            setSearchSteps([
+              { step: 'cv', status: 'completed', message: 'Using cached recommendations' },
+              { step: 'saved', status: 'completed', message: 'Cached results loaded' },
+              { step: 'ai', status: 'completed', message: 'AI Analysis completed' },
+              { step: 'match', status: 'completed', message: `Showing ${data.total || 0} recommendations` }
+            ]);
           } else {
             setSearchSteps([
               { step: 'cv', status: 'skipped', message: 'No CV profile' },
@@ -386,6 +397,50 @@ export const JobsPage = () => {
     setTotalJobs(0);
     setLoadedCount(0);
     setHasSearched(false);
+  };
+
+  const handleScrapeJobs = async () => {
+    const searchTerm = searchQuery.trim() || 'Software Engineer';
+    const location = locationQuery.trim() || 'Hong Kong';
+    
+    setScraping(true);
+    setScrapingResult(null);
+    setError(null);
+    
+    try {
+      const result = await jobsAPI.scrape({
+        search_term: searchTerm,
+        location: location,
+        results_wanted: 100,
+        hours_old: 720,
+        run_in_background: true, // Run in background subprocess to avoid blocking
+      });
+      
+      setScrapingResult(result);
+      
+      // If scraping was started in background, show message and reload jobs after delay
+      if (result.status === 'started') {
+        // Show message that scraping is running in background
+        // Reload jobs after a longer delay to allow scraping to complete
+        setTimeout(() => {
+          loadJobs(true);
+        }, 30000); // Wait 30 seconds for scraping to complete
+      } else if (result.status === 'success' && result.saved > 0) {
+        // If we got immediate results, reload jobs after a short delay
+        setTimeout(() => {
+          loadJobs(true);
+        }, 2000);
+      }
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to scrape jobs';
+      setError(errorMessage);
+      setScrapingResult({
+        status: 'error',
+        message: errorMessage
+      });
+    } finally {
+      setScraping(false);
+    }
     setError(null);
     // Reload recommended jobs after clearing
     loadJobs(true);
@@ -696,6 +751,16 @@ export const JobsPage = () => {
                   </button>
                 )}
                 <button
+                  type="button"
+                  onClick={handleScrapeJobs}
+                  disabled={scraping || loading}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  title="Scrape new jobs from the internet"
+                >
+                  <Download className="h-4 w-4" />
+                  {scraping ? 'Scraping...' : 'Scrape Jobs'}
+                </button>
+                <button
                   type="submit"
                   disabled={loading}
                   className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
@@ -717,6 +782,44 @@ export const JobsPage = () => {
               <button
                 onClick={() => setError(null)}
                 className="text-red-600 hover:text-red-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {scrapingResult && (
+            <div className={`border rounded-lg p-4 flex items-start gap-3 ${
+              scrapingResult.status === 'success' 
+                ? 'bg-green-50 border-green-200' 
+                : 'bg-yellow-50 border-yellow-200'
+            }`}>
+              <CheckCircle2 className={`h-5 w-5 flex-shrink-0 mt-0.5 ${
+                scrapingResult.status === 'success' ? 'text-green-600' : 'text-yellow-600'
+              }`} />
+              <div className="flex-1">
+                <p className={`text-sm font-medium ${
+                  scrapingResult.status === 'success' ? 'text-green-800' : 'text-yellow-800'
+                }`}>
+                  {scrapingResult.status === 'success' ? 'Job Scraping Complete' : 'Job Scraping Started'}
+                </p>
+                <p className={`text-sm mt-1 ${
+                  scrapingResult.status === 'success' ? 'text-green-600' : 'text-yellow-600'
+                }`}>
+                  {scrapingResult.message}
+                  {scrapingResult.status === 'success' && (
+                    <span className="block mt-2">
+                      Scraped: {scrapingResult.scraped} | Saved: {scrapingResult.saved} | 
+                      Skipped: {scrapingResult.skipped} | Failed: {scrapingResult.failed}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={() => setScrapingResult(null)}
+                className={`${
+                  scrapingResult.status === 'success' ? 'text-green-600 hover:text-green-800' : 'text-yellow-600 hover:text-yellow-800'
+                }`}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -789,6 +892,7 @@ export const JobsPage = () => {
                 {searchSource === 'keyword_search' && '🔎 Keyword Search'}
                 {searchSource === 'similar_jobs' && '✨ Similar Jobs'}
                 {searchSource === 'latest' && '📋 Latest Jobs'}
+                {searchSource === 'cached' && '💾 Recommendations'}
                 {searchSource === 'fallback' && '📋 All Jobs'}
                 {searchSource === 'all_jobs' && '📋 All Jobs'}
               </span>
@@ -843,21 +947,65 @@ export const JobsPage = () => {
                         setAgentSteps([]);
                         setCurrentStep('generating');
 
-                        const result = await applicationsAPI.prepareCV(jobId);
-
-                        // Store agent steps if available - show them before navigation
-                        if (result.agent_steps && result.agent_steps.length > 0) {
-                          setAgentSteps(result.agent_steps);
-                          // Keep overlay visible for a moment to show the steps
-                          await new Promise(resolve => setTimeout(resolve, 2000));
-                        }
-
-                        if (result.redirect_url) {
-                          window.location.href = result.redirect_url;
-                        }
-                        // Reload preparation status after generating
-                        const status = await applicationsAPI.getPreparationStatus(jobId);
-                        setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
+                        // Use streaming endpoint for real-time step updates
+                        await applicationsAPI.prepareCVStream(
+                          jobId,
+                          // onStepUpdate
+                          (update: any) => {
+                            console.log('Step update received (JobsPage):', update);
+                            
+                            if (update.type === 'step_start') {
+                              setCurrentStep(update.step);
+                            } else if (update.type === 'step_complete' && update.step_data) {
+                              setAgentSteps(prev => {
+                                const existingIndex = prev.findIndex(
+                                  s => s.step === update.step_data.step && 
+                                  s.refinement_round === update.step_data.refinement_round
+                                );
+                                
+                                if (existingIndex >= 0) {
+                                  const newSteps = [...prev];
+                                  newSteps[existingIndex] = update.step_data;
+                                  return newSteps;
+                                } else {
+                                  return [...prev, update.step_data];
+                                }
+                              });
+                              
+                              const expectedSteps = ['analyze_job', 'analyze_cv', 'create_strategy', 'generate_content', 'validate_output', 'refine_output'];
+                              const currentStepIndex = expectedSteps.indexOf(update.step_data.step);
+                              if (currentStepIndex >= 0 && currentStepIndex < expectedSteps.length - 1) {
+                                setCurrentStep(expectedSteps[currentStepIndex + 1]);
+                              }
+                            }
+                          },
+                          // onComplete
+                          (result: any) => {
+                            console.log('CV Generation Complete (JobsPage):', result);
+                            
+                            if (result.agent_steps) {
+                              setAgentSteps(result.agent_steps);
+                            }
+                            
+                            if (result.success && result.redirect_url) {
+                              setTimeout(() => {
+                                window.location.href = result.redirect_url;
+                              }, 1000);
+                            }
+                            
+                            // Reload preparation status after generating
+                            applicationsAPI.getPreparationStatus(jobId).then(status => {
+                              setPreparationStatuses(prev => ({ ...prev, [jobId]: status }));
+                            });
+                          },
+                          // onError
+                          (error: string) => {
+                            console.error('CV Generation Error (JobsPage):', error);
+                            setError(error);
+                            setGeneratingCV(false);
+                            setCurrentStep(undefined);
+                          }
+                        );
                       } catch (err: any) {
                         setError(err.response?.data?.detail || 'Failed to generate tailored CV');
                         setGeneratingCV(false);

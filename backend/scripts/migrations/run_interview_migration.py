@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script to apply the preparation tables migration to PostgreSQL.
-Creates tables for tailored_cvs and cover_letters.
+Script to apply the interview tables migration to PostgreSQL.
+Creates tables for interview_sessions, interview_questions, interview_responses, and interview_performance_analytics.
 """
 import asyncio
 import asyncpg
@@ -16,11 +16,11 @@ from config import get_settings
 
 
 async def run_migration():
-    """Apply the preparation tables migration"""
+    """Apply the interview tables migration"""
     settings = get_settings()
     
     print("=" * 60)
-    print("Application Preparation Tables Migration")
+    print("Interview Tables Migration")
     print("=" * 60)
     print(f"Connecting to PostgreSQL at {settings.postgres_host}:{settings.postgres_port}...")
     
@@ -39,7 +39,7 @@ async def run_migration():
         print("Connected to PostgreSQL\n")
         
         # Read the migration file
-        migration_file = Path(__file__).parent.parent / "migrations" / "create_preparation_tables.sql"
+        migration_file = Path(__file__).parent.parent.parent / "migrations" / "create_interview_tables_postgres.sql"
         
         if not migration_file.exists():
             print(f"[ERROR] Migration file not found: {migration_file}")
@@ -64,7 +64,7 @@ async def run_migration():
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = 'public' 
-            AND table_name IN ('tailored_cvs', 'cover_letters')
+            AND table_name IN ('interview_sessions', 'interview_questions', 'interview_responses', 'interview_performance_analytics')
             ORDER BY table_name
         """)
         
@@ -80,7 +80,7 @@ async def run_migration():
             SELECT indexname 
             FROM pg_indexes 
             WHERE schemaname = 'public' 
-            AND (indexname LIKE 'idx_tailored_cvs%' OR indexname LIKE 'idx_cover_letters%')
+            AND (indexname LIKE 'idx_interview_%')
             ORDER BY indexname
         """)
         

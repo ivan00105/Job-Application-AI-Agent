@@ -146,47 +146,101 @@ export const ApplicationsPage = () => {
             setAgentSteps([]);
             setCurrentStep('generating');
             
-            const result = await applicationsAPI.prepareCV(jobId);
-            
-            // Store agent steps if available - show them before navigation
-            if (result.agent_steps && result.agent_steps.length > 0) {
-                setAgentSteps(result.agent_steps);
-                // Keep overlay visible for a moment to show the steps
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            
-            // Check if generation was successful
-            if (result.success && result.redirect_url) {
-                // Keep loader visible during navigation - overlay will show on TailoredCVPage
-                navigate(result.redirect_url);
-            } else if (result.error) {
-                throw new Error(result.error);
-            } else {
-                setGeneratingType(null);
-                setCurrentStep(undefined);
-                setMessage({
-                    type: 'error',
-                    text: 'CV generation completed but no redirect URL was provided.'
-                });
-            }
+            // Use streaming endpoint for real-time step updates
+            await applicationsAPI.prepareCVStream(
+                jobId,
+                // onStepUpdate - called when a step starts or completes
+                (update: any) => {
+                    console.log('Step update received:', update);
+                    
+                    if (update.type === 'step_start') {
+                        // Step is starting
+                        setCurrentStep(update.step);
+                    } else if (update.type === 'step_complete' && update.step_data) {
+                        // Step completed - add to agent steps
+                        setAgentSteps(prev => {
+                            // Check if step already exists (for refinement rounds)
+                            const existingIndex = prev.findIndex(
+                                s => s.step === update.step_data.step && 
+                                s.refinement_round === update.step_data.refinement_round
+                            );
+                            
+                            if (existingIndex >= 0) {
+                                // Update existing step
+                                const newSteps = [...prev];
+                                newSteps[existingIndex] = update.step_data;
+                                return newSteps;
+                            } else {
+                                // Add new step
+                                return [...prev, update.step_data];
+                            }
+                        });
+                        
+                        // Update current step to next expected step
+                        const expectedSteps = ['analyze_job', 'analyze_cv', 'create_strategy', 'generate_content', 'validate_output', 'refine_output'];
+                        const currentStepIndex = expectedSteps.indexOf(update.step_data.step);
+                        if (currentStepIndex >= 0 && currentStepIndex < expectedSteps.length - 1) {
+                            setCurrentStep(expectedSteps[currentStepIndex + 1]);
+                        }
+                    }
+                },
+                // onComplete - called when generation is complete
+                (result: any) => {
+                    console.log('CV Generation Complete:', result);
+                    
+                    // Set final agent steps
+                    if (result.agent_steps) {
+                        setAgentSteps(result.agent_steps);
+                    }
+                    
+                    // Check if generation was successful
+                    if (result.success && result.redirect_url) {
+                        // Keep loader visible during navigation - overlay will show on TailoredCVPage
+                        setTimeout(() => {
+                            navigate(result.redirect_url);
+                        }, 1000); // Small delay to show final steps
+                    } else {
+                        setGeneratingType(null);
+                        setCurrentStep(undefined);
+                        setMessage({
+                            type: 'error',
+                            text: result.error || 'CV generation completed but no redirect URL was provided.'
+                        });
+                    }
+                },
+                // onError - called on error
+                (error: string) => {
+                    console.error('CV Generation Error:', error);
+                    setGeneratingType(null);
+                    setCurrentStep(undefined);
+                    
+                    // Provide more helpful error messages
+                    let errorMessage = error;
+                    if (error.includes('CV profile not found') || error.includes('upload your CV')) {
+                        errorMessage = 'Please upload your CV in the Profile page first before generating a tailored CV.';
+                    } else if (error.includes('CV data')) {
+                        errorMessage = 'Your CV data needs to be updated. Please re-upload your CV in the Profile page.';
+                    } else if (error.includes('timeout') || error.includes('temporarily unavailable')) {
+                        errorMessage = 'CV generation service is temporarily busy. Please try again in a moment.';
+                    }
+                    
+                    setMessage({
+                        type: 'error',
+                        text: errorMessage
+                    });
+                    
+                    // Auto-dismiss error after 8 seconds
+                    setTimeout(() => setMessage(null), 8000);
+                }
+            );
         } catch (err: any) {
             setGeneratingType(null);
             setCurrentStep(undefined);
             const errorDetail = err.response?.data?.detail || err.message || 'Failed to generate tailored CV.';
             
-            // Provide more helpful error messages
-            let errorMessage = errorDetail;
-            if (errorDetail.includes('CV profile not found') || errorDetail.includes('upload your CV')) {
-                errorMessage = 'Please upload your CV in the Profile page first before generating a tailored CV.';
-            } else if (errorDetail.includes('CV data')) {
-                errorMessage = 'Your CV data needs to be updated. Please re-upload your CV in the Profile page.';
-            } else if (errorDetail.includes('timeout') || errorDetail.includes('temporarily unavailable')) {
-                errorMessage = 'CV generation service is temporarily busy. Please try again in a moment.';
-            }
-            
             setMessage({
                 type: 'error',
-                text: errorMessage
+                text: errorDetail
             });
             
             // Auto-dismiss error after 8 seconds
@@ -245,7 +299,11 @@ export const ApplicationsPage = () => {
     return (
         <>
             {generatingType && (
-                <FullScreenLoader type={generatingType} />
+                <FullScreenLoader 
+                    type={generatingType} 
+                    agentSteps={agentSteps}
+                    currentStep={currentStep}
+                />
             )}
             <Layout>
                 <div className="space-y-6">

@@ -93,6 +93,7 @@ class JobScraperService:
         except Exception as e:
             logger.error(f"❌ Error scraping jobs: {str(e)}")
             return {
+                "status": "error",
                 "scraped": 0,
                 "saved": 0,
                 "failed": 0,
@@ -105,6 +106,7 @@ class JobScraperService:
         if len(jobs_df) == 0:
             logger.warning("No jobs found")
             return {
+                "status": "success",
                 "scraped": 0,
                 "saved": 0,
                 "failed": 0,
@@ -142,6 +144,8 @@ class JobScraperService:
         logger.info(f"Saved to Qdrant: {results['qdrant_saved']}")
         logger.info(f"Qdrant failed: {results['qdrant_failed']}")
         
+        # Ensure status field is present
+        results["status"] = "success"
         return results
     
     async def _save_jobs_batch(
