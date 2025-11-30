@@ -22,8 +22,7 @@ async def run_migration():
         
         # Read migration file
         migration_file = os.path.join(
-            os.path.dirname(__file__), 
-            '..', 
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             'migrations', 
             'create_profile_cache_tables.sql'
         )

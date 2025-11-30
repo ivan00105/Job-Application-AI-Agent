@@ -7,7 +7,7 @@ import os
 import json
 import re
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, AsyncGenerator
 from enum import Enum
 
 from config import get_settings
@@ -738,6 +738,8 @@ Strategy: {safe_json_dumps(strategy)}
 - needs_refinement: true if score < 8 OR critical issues OR style false OR invented content
 - critical_issues: Must fix (include invented content if found)
 - minor_issues: Can improve (style improvements)
+- quality_feedback: A comprehensive 5-8 sentence assessment that MUST include: (1) 2-3 sentences highlighting the CV's strengths and what it does well (e.g., strong job alignment, clear structure, relevant skills, professional formatting), (2) 2-3 sentences identifying the main areas that need improvement, and (3) 1-2 sentences providing specific, actionable guidance on how to enhance the CV. Be detailed, constructive, and specific.
+- recommendations: List of actionable recommendations for improvement (3-5 items)
 
 **CRITICAL**: Verify all certifications/projects/experiences exist in original CV. Flag invented content as CRITICAL.
 
@@ -745,8 +747,16 @@ Strategy: {safe_json_dumps(strategy)}
 
 Return ONLY valid JSON."""
         
-        # Extract text content from HTML for validation
-        text_content = re.sub(r'<[^>]+>', '', html_content)[:2000]  # First 2000 chars of text
+        # Extract text content from HTML for validation - use entire content
+        text_content = re.sub(r'<[^>]+>', '', html_content)
+        text_content_length = len(text_content)
+        
+        # Use full original CV text for comparison
+        original_cv_text = cv_text[:6000] if len(cv_text) > 6000 else cv_text
+        
+        # Log warnings for very short content
+        if text_content_length < 500:
+            print(f"⚠️ WARNING: CV content is very short ({text_content_length} chars) - may indicate significant deletions")
         
         validation_context = ""
         if previous_validation:
@@ -757,24 +767,52 @@ Return ONLY valid JSON."""
         user_prompt = f"""Job Requirements:
 {json.dumps(job_analysis, indent=2)}
 
-Original CV (for verification):
-{cv_text[:1500]}
+Original CV Profile (COMPLETE - for verification against current CV):
+{original_cv_text}
 
-Generated CV (excerpt):
+Current CV Content (COMPLETE - this is the ACTUAL current state to validate):
 {text_content}
 {validation_context}
 
-**CRITICAL**: Verify all certifications/projects/experiences exist in original CV. Flag invented content.
+**CRITICAL**: 
+1. Compare the ENTIRE current CV content against the COMPLETE original CV profile above. Verify ALL information:
+   - Personal information (name, contact details)
+   - Work experience (companies, titles, dates, responsibilities)
+   - Education (institutions, degrees, dates)
+   - Skills (all skills listed)
+   - Certifications (all certifications)
+   - Projects (all projects)
+   - Any other sections
+2. Flag ANY invented content that doesn't exist in the original CV profile.
+3. Flag ANY missing critical information from the original profile (if important sections are deleted).
+4. Pay close attention to the ACTUAL current CV content. If content is very short or missing sections compared to the original profile, this indicates significant deletions - flag this as a critical issue.
+5. Do NOT assume content exists if it's not in the "Current CV Content" section above.
+
+**PROFILE VERIFICATION**: 
+- Cross-reference every piece of information in the current CV against the original CV profile.
+- Ensure dates, company names, job titles, education details, certifications, and skills match the original profile.
+- If the current CV has less content than the original profile, identify what's missing.
 
 **STYLE**: Check professional appearance, alignment, spacing, typography, layout, PDF readiness.
 
-List ALL issues (critical and minor)."""
+**CONTENT COMPLETENESS**: 
+- Compare the completeness of current CV against the original profile.
+- If the CV content is very short (less than 500 characters of text) or missing major sections from the original profile, this is a CRITICAL issue.
+
+List ALL issues (critical and minor).
+
+Provide comprehensive quality_feedback (5-8 sentences) that MUST include:
+1. 2-3 sentences on CV strengths (what it does well - job alignment, structure, skills, formatting, content quality) - ONLY mention strengths that actually exist in the current content
+2. 2-3 sentences on areas needing improvement (specific weaknesses or gaps) - be specific about what's missing or inadequate
+3. 1-2 sentences with actionable guidance on how to improve (concrete steps or suggestions)
+
+Be specific, constructive, and detailed in your feedback. Base your assessment ONLY on what is actually present in the "Current CV Content" section above."""
         
         try:
             response = await llm_service.generate_text(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                max_tokens=1000,
+                max_tokens=2000,
                 temperature=0.2
             )
             
@@ -1330,6 +1368,285 @@ Return complete refined HTML with all issues resolved."""
             
         except Exception as e:
             return {
+                "html_content": html_content,
+                "emphasis_notes": emphasis_notes or f"CV tailored for {job_title} at {company}",
+                "success": False,
+                "error": str(e),
+                "agent_steps": agent_steps
+            }
+    
+    async def generate_tailored_cv_html_stream(
+        self,
+        cv_parsed_data: Dict[str, Any],
+        job_description: str,
+        job_title: str = "",
+        company: str = "",
+        max_attempts: int = 3
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Streaming version of CV generation that yields step updates in real-time.
+        Yields step updates as they happen, then yields the final result.
+        """
+        # Format CV text
+        cv_text = self._format_cv_text_from_parsed_data(cv_parsed_data)
+        
+        if not cv_text:
+            yield {
+                "type": "error",
+                "error": "CV data is empty or invalid",
+                "agent_steps": []
+            }
+            return
+        
+        agent_steps = []
+        html_content = None
+        emphasis_notes = ""
+        
+        try:
+            # Step 1: Combined Analysis (Job + CV)
+            yield {"type": "step_start", "step": AgentStep.ANALYZE_JOB.value, "message": "Analyzing job requirements..."}
+            print("🤖 Agent Step 1: Analyzing job requirements and CV relevance...")
+            combined_analysis_result = await self._agent_step_analyze_job_and_cv(
+                job_description, job_title, company, cv_text
+            )
+
+            if combined_analysis_result["success"]:
+                step_job = {
+                    "step": AgentStep.ANALYZE_JOB.value,
+                    "success": True,
+                    "analysis": combined_analysis_result.get("job_analysis", {})
+                }
+                agent_steps.append(step_job)
+                yield {"type": "step_complete", "step_data": step_job}
+                
+                step_cv = {
+                    "step": AgentStep.ANALYZE_CV.value,
+                    "success": True,
+                    "analysis": combined_analysis_result.get("cv_analysis", {})
+                }
+                agent_steps.append(step_cv)
+                yield {"type": "step_complete", "step_data": step_cv}
+                
+                job_analysis = combined_analysis_result.get("job_analysis", {})
+                cv_analysis = combined_analysis_result.get("cv_analysis", {})
+            else:
+                print("⚠️ Combined analysis failed, falling back to separate analysis steps...")
+                yield {"type": "step_start", "step": AgentStep.ANALYZE_JOB.value, "message": "Analyzing job requirements (fallback)..."}
+                job_analysis_result = await self._agent_step_analyze_job(
+                    job_description, job_title, company
+                )
+                agent_steps.append(job_analysis_result)
+                yield {"type": "step_complete", "step_data": job_analysis_result}
+                if not job_analysis_result["success"]:
+                    raise Exception(f"Job analysis failed: {job_analysis_result.get('error')}")
+                job_analysis = job_analysis_result["analysis"]
+
+                yield {"type": "step_start", "step": AgentStep.ANALYZE_CV.value, "message": "Analyzing your CV..."}
+                cv_analysis_result = await self._agent_step_analyze_cv(cv_text, job_analysis)
+                agent_steps.append(cv_analysis_result)
+                yield {"type": "step_complete", "step_data": cv_analysis_result}
+                if not cv_analysis_result["success"]:
+                    raise Exception(f"CV analysis failed: {cv_analysis_result.get('error')}")
+                cv_analysis = cv_analysis_result["analysis"]
+            
+            # Step 2: Create Strategy
+            yield {"type": "step_start", "step": AgentStep.CREATE_STRATEGY.value, "message": "Creating tailoring strategy..."}
+            print("🤖 Agent Step 2: Creating tailoring strategy...")
+            strategy_result = await self._agent_step_create_strategy(
+                job_analysis, cv_analysis, cv_text
+            )
+            agent_steps.append(strategy_result)
+            yield {"type": "step_complete", "step_data": strategy_result}
+            
+            if not strategy_result["success"]:
+                raise Exception(f"Strategy creation failed: {strategy_result.get('error')}")
+            
+            strategy = strategy_result["strategy"]
+            
+            # Generate emphasis notes from analysis
+            relevant_skills = cv_analysis.get("relevant_skills", [])[:5]
+            strengths = cv_analysis.get("strengths", [])[:3]
+            emphasis_notes = f"CV tailored for {job_title} at {company}. "
+            if relevant_skills:
+                emphasis_notes += f"Emphasized skills: {', '.join(relevant_skills)}. "
+            if strengths:
+                emphasis_notes += f"Key strengths: {', '.join(strengths)}."
+            
+            # Step 3: Generate Content
+            yield {"type": "step_start", "step": AgentStep.GENERATE_CONTENT.value, "message": "Generating CV content..."}
+            print("🤖 Agent Step 3: Generating CV content...")
+            generation_result = await self._agent_step_generate_content(
+                cv_text, job_description, job_title, company,
+                job_analysis, cv_analysis, strategy
+            )
+            agent_steps.append(generation_result)
+            yield {"type": "step_complete", "step_data": generation_result}
+            
+            if not generation_result["success"]:
+                raise Exception(f"Content generation failed: {generation_result.get('error')}")
+            
+            html_content = generation_result["html_content"]
+            
+            if not html_content or not self._looks_like_html(html_content):
+                raise Exception("Generated content is not valid HTML")
+            
+            # Normalize @page margins to ensure consistency (8mm 10mm)
+            html_content = self._normalize_page_margins(html_content)
+            
+            # Step 4: Validate Output
+            yield {"type": "step_start", "step": AgentStep.VALIDATE_OUTPUT.value, "message": "Validating output..."}
+            print("🤖 Agent Step 4: Validating output...")
+            validation_result = await self._agent_step_validate_output(
+                html_content, cv_text, job_analysis
+            )
+            agent_steps.append(validation_result)
+            yield {"type": "step_complete", "step_data": validation_result}
+            validation = validation_result.get("validation", {}) or {}
+
+            if not validation:
+                raise Exception("Validation failed to return results")
+
+            validation_issues = self._extract_validation_issues(validation)
+            if validation_issues:
+                validation["issues"] = validation_issues
+            needs_refinement = validation.get("needs_refinement", False)
+            quality_score = validation.get("quality_score", 0)
+
+            force_style_round = not validation.get("style_acceptable", True)
+            force_fact_round = not validation.get("no_invented_content", True)
+            min_refinement_rounds = 1 if (force_style_round or force_fact_round) else 0
+            skip_revalidation_rounds = {2} if self.max_refinement_rounds > 2 else set()
+            pending_revalidation = False
+
+            if not needs_refinement and not validation_issues and quality_score >= 8:
+                print("✅ Validation passed with high quality. Skipping refinement.")
+                html_content = self._normalize_page_margins(html_content)
+                yield {
+                    "type": "complete",
+                    "html_content": html_content,
+                    "emphasis_notes": emphasis_notes,
+                    "success": True,
+                    "error": None,
+                    "agent_steps": agent_steps,
+                    "refinement_rounds": 0,
+                    "final_quality_score": validation.get("quality_score", 0)
+                }
+                return
+
+            # Step 5: Iterative Refinement (if needed)
+            refinement_round = 0
+            previous_issues = set()
+            
+            while refinement_round < self.max_refinement_rounds:
+                needs_refinement = validation.get("needs_refinement", False)
+                quality_score = validation.get("quality_score", 10)
+                
+                if not needs_refinement and quality_score >= 8:
+                    break
+                
+                if refinement_round in skip_revalidation_rounds:
+                    pending_revalidation = True
+                else:
+                    pending_revalidation = False
+                
+                refinement_round += 1
+                yield {
+                    "type": "step_start",
+                    "step": AgentStep.REFINE_OUTPUT.value,
+                    "message": f"Refining CV (round {refinement_round})...",
+                    "refinement_round": refinement_round
+                }
+                print(f"🤖 Agent Step 5: Refining CV (round {refinement_round})...")
+                
+                # Extract issues from validation for refinement
+                validation_issues_list = self._extract_validation_issues(validation)
+                
+                refinement_result = await self._agent_step_refine_output(
+                    html_content=html_content,
+                    validation=validation,
+                    issues=validation_issues_list,
+                    cv_text=cv_text,
+                    job_description=job_description,
+                    refinement_round=refinement_round
+                )
+                
+                if not refinement_result.get("success", False):
+                    print(f"⚠️ Refinement round {refinement_round} failed, stopping refinement")
+                    break
+                
+                # Get refined content - the function returns 'html_content' key
+                refined_html = refinement_result.get("html_content")
+                
+                if not refined_html:
+                    print(f"⚠️ Refinement round {refinement_round} returned no HTML content")
+                    break
+                
+                agent_steps.append({
+                    "step": AgentStep.REFINE_OUTPUT.value,
+                    "success": True,
+                    "refinement_round": refinement_round,
+                    "refined_content": refined_html
+                })
+                yield {"type": "step_complete", "step_data": agent_steps[-1]}
+                
+                html_content = refined_html
+                html_content = self._normalize_page_margins(html_content)
+                
+                if not pending_revalidation:
+                    validation_result = await self._agent_step_validate_output(
+                        html_content, cv_text, job_analysis
+                    )
+                    agent_steps.append({
+                        "step": AgentStep.VALIDATE_OUTPUT.value,
+                        "success": True,
+                        "is_revalidation": True,
+                        "validation": validation_result.get("validation", {})
+                    })
+                    yield {"type": "step_complete", "step_data": agent_steps[-1]}
+                    validation = validation_result.get("validation", {}) or {}
+                    validation_issues = self._extract_validation_issues(validation)
+                    
+                    if validation_issues:
+                        validation["issues"] = validation_issues
+                    
+                    current_issues = set(validation_issues)
+                    if current_issues == previous_issues:
+                        print(f"⚠️ Same issues persist after refinement round {refinement_round}, stopping")
+                        break
+                    previous_issues = current_issues
+            
+            # Final validation
+            if refinement_round > 0:
+                yield {"type": "step_start", "step": AgentStep.VALIDATE_OUTPUT.value, "message": "Final validation..."}
+                final_validation_result = await self._agent_step_validate_output(
+                    html_content, cv_text, job_analysis
+                )
+                agent_steps.append({
+                    "step": AgentStep.VALIDATE_OUTPUT.value,
+                    "success": True,
+                    "is_revalidation": True,
+                    "validation": final_validation_result.get("validation", {})
+                })
+                yield {"type": "step_complete", "step_data": agent_steps[-1]}
+                validation = final_validation_result.get("validation", validation)
+            
+            # Normalize @page margins before returning final HTML
+            html_content = self._normalize_page_margins(html_content)
+            
+            yield {
+                "type": "complete",
+                "html_content": html_content,
+                "emphasis_notes": emphasis_notes,
+                "success": True,
+                "error": None,
+                "agent_steps": agent_steps,
+                "refinement_rounds": refinement_round,
+                "final_quality_score": validation.get("quality_score", 0)
+            }
+            
+        except Exception as e:
+            yield {
+                "type": "error",
                 "html_content": html_content,
                 "emphasis_notes": emphasis_notes or f"CV tailored for {job_title} at {company}",
                 "success": False,

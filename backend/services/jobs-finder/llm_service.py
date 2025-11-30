@@ -205,7 +205,8 @@ Please enhance this query for better job search results. Expand it with relevant
         prompt: str,
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        model: Optional[str] = None
     ) -> str:
         """
         Generate text using LLM with a custom prompt.
@@ -215,6 +216,7 @@ Please enhance this query for better job search results. Expand it with relevant
             system_prompt: Optional system prompt
             max_tokens: Optional max tokens (overrides default)
             temperature: Optional temperature (overrides default)
+            model: Optional model name (overrides default model)
             
         Returns:
             Generated text response
@@ -222,13 +224,16 @@ Please enhance this query for better job search results. Expand it with relevant
         if not self.api_key:
             raise ValueError("OpenRouter API key not configured")
         
+        # Use provided model or fall back to default
+        model_to_use = model or self.model
+        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         
         request_data = {
-            "model": self.model,
+            "model": model_to_use,
             "messages": messages,
             "temperature": temperature or self.temperature,
             "max_tokens": max_tokens or (self.max_tokens * 10)  # Default to 10x for longer responses
@@ -259,7 +264,7 @@ Please enhance this query for better job search results. Expand it with relevant
                 # Log the LLM call
                 log_llm_call(
                     provider="openrouter",
-                    model=self.model,
+                    model=model_to_use,
                     prompt=prompt,
                     system_prompt=system_prompt,
                     response=generated_text,
@@ -280,7 +285,7 @@ Please enhance this query for better job search results. Expand it with relevant
             # Log the error
             log_llm_call(
                 provider="openrouter",
-                model=self.model,
+                model=model_to_use,
                 prompt=prompt,
                 system_prompt=system_prompt,
                 error=error_msg,
@@ -297,7 +302,7 @@ Please enhance this query for better job search results. Expand it with relevant
             # Log the error
             log_llm_call(
                 provider="openrouter",
-                model=self.model,
+                model=model_to_use,
                 prompt=prompt,
                 system_prompt=system_prompt,
                 error=error_msg,

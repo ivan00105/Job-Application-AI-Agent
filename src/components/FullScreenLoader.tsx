@@ -50,6 +50,12 @@ export const FullScreenLoader = ({ type, message, agentSteps = [], currentStep }
     
     const displayMessage = message || defaultMessage;
     const Icon = isCV ? FileText : Mail;
+    
+    // Debug: Log agent steps for CV generation
+    if (isCV && agentSteps.length > 0) {
+        console.log('FullScreenLoader - Agent Steps:', agentSteps);
+        console.log('FullScreenLoader - Current Step:', currentStep);
+    }
 
     return (
         <div className="fixed inset-0 z-50 bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
@@ -96,21 +102,26 @@ export const FullScreenLoader = ({ type, message, agentSteps = [], currentStep }
                     {displayMessage}
                 </p>
 
-                {/* Agent Steps Progress - Show if agentSteps are available */}
-                {isCV && agentSteps.length > 0 && (
+                {/* Agent Steps Progress - Always show for CV generation */}
+                {isCV && (
                     <div className="mb-6 max-w-lg mx-auto">
                         <div className="bg-white/80 backdrop-blur-sm rounded-lg p-4 shadow-lg border border-blue-100">
                             <div className="space-y-2">
                                 {expectedSteps.map((stepKey, index) => {
+                                    // Find matching step - check both exact match and contains
                                     const completedStep = agentSteps.find(s => {
-                                        const stepType = s.step || '';
-                                        return stepType.includes(stepKey) || stepType === stepKey;
+                                        if (!s || !s.step) return false;
+                                        const stepType = String(s.step).toLowerCase();
+                                        const stepKeyLower = stepKey.toLowerCase();
+                                        return stepType === stepKeyLower || stepType.includes(stepKeyLower);
                                     });
                                     
+                                    // Determine if this step is currently active
+                                    // Active if: it's the first step and no steps completed, OR it's the next step after completed ones, OR currentStep matches
                                     const isActive = !completedStep && (
                                         (agentSteps.length === 0 && index === 0) ||
-                                        (agentSteps.length > 0 && index === agentSteps.length) ||
-                                        (currentStep && currentStep.includes(stepKey))
+                                        (agentSteps.length > 0 && index === agentSteps.filter(s => s && s.success !== false).length) ||
+                                        (currentStep && String(currentStep).toLowerCase().includes(stepKey.toLowerCase()))
                                     );
                                     
                                     const isCompleted = completedStep && completedStep.success !== false;
@@ -162,8 +173,8 @@ export const FullScreenLoader = ({ type, message, agentSteps = [], currentStep }
                     </div>
                 )}
 
-                {/* Progress dots - Show when no agent steps */}
-                {(!isCV || agentSteps.length === 0) && (
+                {/* Progress dots - Show only for cover letters */}
+                {!isCV && (
                     <div className="flex justify-center gap-2 mb-6">
                         <div className="w-2 h-2 bg-blue-600 rounded-full animate-bounce"></div>
                         <div className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
@@ -172,8 +183,10 @@ export const FullScreenLoader = ({ type, message, agentSteps = [], currentStep }
                 )}
 
                 <p className="text-sm text-gray-500 mt-4">
-                    {agentSteps.length > 0 
-                        ? `Step ${agentSteps.filter(s => s.success !== false).length} of ${expectedSteps.length} completed`
+                    {isCV 
+                        ? agentSteps.length > 0 
+                            ? `Step ${agentSteps.filter(s => s.success !== false).length} of ${expectedSteps.length} completed`
+                            : `Starting step 1 of ${expectedSteps.length}...`
                         : 'This may take a few moments...'}
                 </p>
             </div>

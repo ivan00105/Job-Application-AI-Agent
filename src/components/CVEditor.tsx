@@ -1594,25 +1594,30 @@ ${value}
     }
   };
 
-  const handleValidate = async () => {
+  // Helper function to get current HTML content from editor
+  const getCurrentHtmlContent = (): string => {
     try {
-      setValidating(true);
-      setMessage(null);
-      setValidationResult(null);
-      
-      let finalHtml = htmlContent;
-      
       // If in visual mode, get latest from iframe
       if (editMode === 'visual' && iframeRef.current) {
         const iframe = iframeRef.current;
+        
+        // Check if iframe is loaded
+        if (iframe.contentDocument?.readyState !== 'complete' && 
+            iframe.contentWindow?.document?.readyState !== 'complete') {
+          console.warn('Iframe not ready, using htmlContent state');
+          return htmlContent || initialHtml || '';
+        }
+        
         const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document || null;
         
-        if (iframeDoc && iframeDoc.documentElement) {
+        if (iframeDoc && iframeDoc.documentElement && iframeDoc.body) {
           // Get the full HTML from iframe, preserving head and body
           const headContent = iframeDoc.head ? iframeDoc.head.innerHTML : '';
           const bodyContent = iframeDoc.body ? iframeDoc.body.innerHTML : '';
           
-          finalHtml = `<!DOCTYPE html>
+          // Check if body has actual content (not just empty or whitespace)
+          if (bodyContent && bodyContent.trim().length > 0) {
+            const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -1623,7 +1628,94 @@ ${value}
   ${bodyContent}
 </body>
 </html>`;
+            console.log('Retrieved content from iframe, length:', fullHtml.length);
+            return fullHtml;
+          } else {
+            console.warn('Iframe body is empty, falling back to htmlContent state');
+          }
+        } else {
+          console.warn('Iframe document or body not accessible, falling back to htmlContent state');
         }
+      }
+      
+      // For HTML mode, use htmlContent directly (Monaco editor updates it via onChange)
+      // For CSS mode, we need to inject CSS into HTML if it's not already there
+      if (editMode === 'css' && cssContent) {
+        // Try to inject CSS into HTML if there's a <style> tag or create one
+        let htmlWithCss = htmlContent || initialHtml || '';
+        if (htmlWithCss && !htmlWithCss.includes('<style>') && !htmlWithCss.includes('<link')) {
+          // Inject CSS into head
+          if (htmlWithCss.includes('</head>')) {
+            htmlWithCss = htmlWithCss.replace('</head>', `<style>${cssContent}</style></head>`);
+          } else if (htmlWithCss.includes('<body>')) {
+            htmlWithCss = htmlWithCss.replace('<body>', `<head><style>${cssContent}</style></head><body>`);
+          } else {
+            htmlWithCss = `<head><style>${cssContent}</style></head><body>${htmlWithCss}</body>`;
+          }
+        }
+        console.log('Using htmlContent with CSS injected, length:', htmlWithCss.length);
+        return htmlWithCss;
+      }
+      
+      // Fallback to htmlContent state if iframe access fails
+      const fallbackContent = htmlContent || initialHtml || '';
+      console.log('Using htmlContent state, length:', fallbackContent.length);
+      return fallbackContent;
+    } catch (error) {
+      console.error('Error getting current HTML content:', error);
+      // Fallback to htmlContent state
+      const fallbackContent = htmlContent || initialHtml || '';
+      console.log('Error fallback, using htmlContent state, length:', fallbackContent.length);
+      return fallbackContent;
+    }
+  };
+
+  const handleValidate = async () => {
+    try {
+      setValidating(true);
+      setMessage(null);
+      setValidationResult(null);
+      
+      // Small delay to ensure iframe is ready in visual mode
+      if (editMode === 'visual' && iframeRef.current) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      // Get current HTML content from editor
+      let finalHtml = getCurrentHtmlContent();
+      
+      // If we got empty content and we're in visual mode, try one more time after a short delay
+      if ((!finalHtml || finalHtml.trim().length === 0) && editMode === 'visual' && iframeRef.current) {
+        console.warn('First attempt got empty content, retrying after delay...');
+        await new Promise(resolve => setTimeout(resolve, 200));
+        finalHtml = getCurrentHtmlContent();
+      }
+      
+      if (!finalHtml || finalHtml.trim().length === 0) {
+        setMessage({
+          type: 'error',
+          text: 'No content found to validate. Please ensure the CV has content and try again.'
+        });
+        setTimeout(() => setMessage(null), 5000);
+        return;
+      }
+      
+      // Extract text content length for validation
+      const textContent = finalHtml.replace(/<[^>]+>/g, '');
+      const textLength = textContent.length;
+      
+      console.log('Validating CV:', {
+        editMode,
+        htmlLength: finalHtml.length,
+        textLength: textLength,
+        hasIframe: !!iframeRef.current,
+        iframeReady: iframeRef.current?.contentDocument?.readyState,
+        firstChars: finalHtml.substring(0, 100),
+        textPreview: textContent.substring(0, 200)
+      });
+      
+      if (textLength < 200) {
+        console.warn('⚠️ WARNING: CV content is very short - validation may flag this as incomplete');
       }
       
       const result = await applicationsAPI.validateCV(cvId, finalHtml);
@@ -1633,6 +1725,8 @@ ${value}
         const validation = result.validation;
         const score = validation.quality_score || 0;
         const issues = validation.issues || [];
+        
+        console.log('Validation result:', { score, issuesCount: issues.length });
         
         if (score >= 8 && issues.length === 0) {
           setMessage({
@@ -1646,8 +1740,15 @@ ${value}
           });
         }
         setTimeout(() => setMessage(null), 5000);
+      } else {
+        setMessage({
+          type: 'error',
+          text: result.error || 'Validation failed'
+        });
+        setTimeout(() => setMessage(null), 5000);
       }
     } catch (err: any) {
+      console.error('Validation error:', err);
       setMessage({
         type: 'error',
         text: err.response?.data?.detail || err.message || 'Failed to validate CV'
@@ -1739,47 +1840,98 @@ ${value}
       setMessage(null);
       setShowRegenerateConfirm(false);
       
-      // Call prepareCV API to regenerate the CV
-      const result = await applicationsAPI.prepareCV(jobId);
-      
-      // Store agent steps if available for progress display
-      if (result.agent_steps && result.agent_steps.length > 0) {
-        setAgentSteps(result.agent_steps);
-      }
-      
-      if (result.success && result.html_content) {
-        // Update HTML content with newly generated CV
-        const newHtml = result.html_content;
-        setHtmlContent(newHtml);
-        
-        // Update CSS if available
-        const styles = extractStyles(newHtml);
-        if (styles) {
-          setCssContent(styles);
-        }
-        
-        // Reset iframe to show new content
-        if (iframeRef.current && editMode === 'visual') {
-          const iframe = iframeRef.current;
-          const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document || null;
-          if (iframeDoc && iframeDoc.body) {
-            iframeDoc.body.removeAttribute('data-initialized');
+      // Use streaming endpoint for real-time step updates during regeneration
+      await applicationsAPI.prepareCVStream(
+        jobId,
+        // onStepUpdate - called when a step starts or completes
+        (update: any) => {
+          console.log('Regeneration step update received:', update);
+          
+          if (update.type === 'step_start') {
+            // Step is starting
+            setCurrentStep(update.step);
+          } else if (update.type === 'step_complete' && update.step_data) {
+            // Step completed - add to agent steps
+            setAgentSteps(prev => {
+              // Check if step already exists (for refinement rounds)
+              const existingIndex = prev.findIndex(
+                s => s.step === update.step_data.step && 
+                s.refinement_round === update.step_data.refinement_round
+              );
+              
+              if (existingIndex >= 0) {
+                // Update existing step
+                const newSteps = [...prev];
+                newSteps[existingIndex] = update.step_data;
+                return newSteps;
+              } else {
+                // Add new step
+                return [...prev, update.step_data];
+              }
+            });
+            
+            // Update current step to next expected step
+            const expectedSteps = ['analyze_job', 'analyze_cv', 'create_strategy', 'generate_content', 'validate_output', 'refine_output'];
+            const currentStepIndex = expectedSteps.indexOf(update.step_data.step);
+            if (currentStepIndex >= 0 && currentStepIndex < expectedSteps.length - 1) {
+              setCurrentStep(expectedSteps[currentStepIndex + 1]);
+            }
           }
+        },
+        // onComplete - called when regeneration is complete
+        (result: any) => {
+          console.log('CV Regeneration Complete (CVEditor):', result);
+          
+          // Set final agent steps
+          if (result.agent_steps) {
+            setAgentSteps(result.agent_steps);
+          }
+          
+          if (result.success && result.html_content) {
+            // Update HTML content with newly generated CV
+            const newHtml = result.html_content;
+            setHtmlContent(newHtml);
+            
+            // Update CSS if available
+            const styles = extractStyles(newHtml);
+            if (styles) {
+              setCssContent(styles);
+            }
+            
+            // Reset iframe to show new content
+            if (iframeRef.current && editMode === 'visual') {
+              const iframe = iframeRef.current;
+              const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document || null;
+              if (iframeDoc && iframeDoc.body) {
+                iframeDoc.body.removeAttribute('data-initialized');
+              }
+            }
+            
+            setMessage({
+              type: 'success',
+              text: 'CV regenerated successfully! All previous edits have been replaced with a fresh CV.'
+            });
+            setTimeout(() => setMessage(null), 5000);
+          } else {
+            setMessage({
+              type: 'error',
+              text: result.error || 'Failed to regenerate CV'
+            });
+            setTimeout(() => setMessage(null), 5000);
+          }
+        },
+        // onError - called on error
+        (error: string) => {
+          console.error('CV Regeneration Error (CVEditor):', error);
+          setMessage({
+            type: 'error',
+            text: error
+          });
+          setTimeout(() => setMessage(null), 5000);
         }
-        
-        setMessage({
-          type: 'success',
-          text: 'CV regenerated successfully! All previous edits have been replaced with a fresh CV.'
-        });
-        setTimeout(() => setMessage(null), 5000);
-      } else {
-        setMessage({
-          type: 'error',
-          text: result.error || 'Failed to regenerate CV'
-        });
-        setTimeout(() => setMessage(null), 5000);
-      }
+      );
     } catch (err: any) {
+      console.error('CV Regeneration Exception (CVEditor):', err);
       setMessage({
         type: 'error',
         text: err.response?.data?.detail || err.message || 'Failed to regenerate CV'
@@ -1787,6 +1939,7 @@ ${value}
       setTimeout(() => setMessage(null), 5000);
     } finally {
       setRegenerating(false);
+      setCurrentStep(undefined);
     }
   };
 
@@ -3443,7 +3596,7 @@ ${value}
       )}
 
       {/* Error Messages (keep as bar for errors) */}
-      {message && !assisting && message.type === 'error' && (
+      {message && !assisting && message.type === 'error' && !validationResult && (
         <div className="mx-4 mt-4 p-3 rounded-lg border bg-red-50 border-red-200 text-red-800">
           {message.text}
         </div>
@@ -3560,24 +3713,38 @@ ${value}
                 <X className="h-4 w-4 text-blue-600" />
               </button>
             </div>
-            <div className="overflow-y-auto p-4 text-sm text-blue-800 space-y-2">
-              <p className="font-medium">Quality Score: <span className="text-blue-900">{validationResult.quality_score || 0}/10</span></p>
+            <div className="overflow-y-auto p-4 text-sm text-blue-800 space-y-3">
+              <div>
+                <p className="font-medium">Quality Score: <span className="text-blue-900 font-bold">{validationResult.quality_score || 0}/10</span></p>
+              </div>
+              
+              {validationResult.quality_feedback && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="font-medium text-blue-900 mb-2">Overall Quality Assessment:</p>
+                  <p className="text-blue-800 leading-relaxed">{validationResult.quality_feedback}</p>
+                </div>
+              )}
+              
               {validationResult.issues && validationResult.issues.length > 0 && (
                 <div>
-                  <p className="font-medium mt-2">Issues Found:</p>
-                  <ul className="list-disc list-inside ml-2 space-y-1">
+                  <p className="font-medium mt-2 text-red-700">Issues Found ({validationResult.issues.length}):</p>
+                  <ul className="list-disc list-inside ml-2 space-y-1 mt-1">
                     {validationResult.issues.slice(0, 5).map((issue: string, idx: number) => (
-                      <li key={idx}>{issue}</li>
+                      <li key={idx} className="text-red-600">{issue}</li>
                     ))}
+                    {validationResult.issues.length > 5 && (
+                      <li className="text-blue-600 italic">... and {validationResult.issues.length - 5} more issue(s)</li>
+                    )}
                   </ul>
                 </div>
               )}
+              
               {validationResult.recommendations && validationResult.recommendations.length > 0 && (
                 <div>
-                  <p className="font-medium mt-2">Recommendations:</p>
-                  <ul className="list-disc list-inside ml-2 space-y-1">
-                    {validationResult.recommendations.slice(0, 3).map((rec: string, idx: number) => (
-                      <li key={idx}>{rec}</li>
+                  <p className="font-medium mt-2 text-green-700">Recommendations:</p>
+                  <ul className="list-disc list-inside ml-2 space-y-1 mt-1">
+                    {validationResult.recommendations.slice(0, 5).map((rec: string, idx: number) => (
+                      <li key={idx} className="text-green-600">{rec}</li>
                     ))}
                   </ul>
                 </div>

@@ -2,7 +2,7 @@
 Job listings API endpoints.
 Handles job search, filtering, and retrieval.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import os
@@ -258,17 +258,23 @@ async def search_jobs(
     #     param_count += 1
 
     if query:
-        # Handle multiple keywords: split query and search for each term
-        # This allows "axa manager" to find jobs with both "axa" and "manager"
+        # Handle multiple keywords: use OR logic for better matching
+        # This allows "machine learning" to find jobs with either "machine" OR "learning" OR the full phrase
         query_terms = query.strip().split()
         if len(query_terms) > 1:
-            # Multiple keywords: use AND logic (all terms must match)
+            # Multiple keywords: search for full phrase first, then individual terms with OR logic
+            # This is more flexible than strict AND logic
             term_conditions = []
+            # First, try to match the full phrase
+            term_conditions.append(f"(j.title ILIKE ${param_count} OR j.description ILIKE ${param_count} OR j.company ILIKE ${param_count})")
+            params.append(f"%{query}%")
+            param_count += 1
+            # Then, match individual terms (at least one should match)
             for term in query_terms:
                 term_conditions.append(f"(j.title ILIKE ${param_count} OR j.description ILIKE ${param_count} OR j.company ILIKE ${param_count})")
                 params.append(f"%{term}%")
                 param_count += 1
-            conditions.append(f"({' AND '.join(term_conditions)})")
+            conditions.append(f"({' OR '.join(term_conditions)})")
         else:
             # Single keyword: simple search
             conditions.append(f"(j.title ILIKE ${param_count} OR j.description ILIKE ${param_count} OR j.company ILIKE ${param_count})")
@@ -312,6 +318,7 @@ async def get_recommended_jobs(
     limit: int = Query(25, ge=1, le=100, description="Number of results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     hide_saved: bool = Query(False, description="Hide jobs user has saved"),
+    location: Optional[str] = Query(None, description="Filter jobs by location"),
     current_user: dict = Depends(get_current_user),
     db: PostgresClient = Depends(get_db)
 ):
@@ -347,6 +354,12 @@ async def get_recommended_jobs(
                 # Use NOT EXISTS to explicitly exclude jobs with any application record
                 conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
             
+            # Apply location filter if provided
+            if location:
+                conditions.append(f"j.location ILIKE ${param_count}")
+                params.append(f"%{location}%")
+                param_count += 1
+            
             where_clause = " AND ".join(conditions)
             
             search_query_sql = f"""
@@ -381,27 +394,47 @@ async def get_recommended_jobs(
         
         if profile:
             # First check if we have pre-calculated matches in job_matches table
+            match_conditions = ["jm.user_id = $1", "j.is_active = TRUE"]
+            match_params = [current_user["id"]]
+            match_param_count = 2
+            
+            # Apply location filter if provided
+            if location:
+                match_conditions.append(f"j.location ILIKE ${match_param_count}")
+                match_params.append(f"%{location}%")
+                match_param_count += 1
+            
+            match_where = " AND ".join(match_conditions)
+            match_params.extend([limit, offset])
+            
             matches = await db.fetch_all(
-                """SELECT jm.*, j.*, 
+                f"""SELECT jm.*, j.*, 
                           CASE WHEN a.id IS NOT NULL THEN true ELSE false END as applied,
                           a.status as application_status,
                           a.id as application_id
                    FROM job_matches jm
                    JOIN jobs j ON jm.job_id = j.id
                    LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
-                   WHERE jm.user_id = $1 AND j.is_active = TRUE
+                   WHERE {match_where}
                    ORDER BY jm.overall_score DESC
-                   LIMIT $2 OFFSET $3""",
-                current_user["id"], limit, offset
+                   LIMIT ${match_param_count} OFFSET ${match_param_count + 1}""",
+                *match_params
             )
             
             if matches:
                 recommended_jobs = [dict(m) for m in matches]
+                # Count query with location filter if provided
+                count_conditions = ["jm.user_id = $1", "j.is_active = TRUE"]
+                count_params = [current_user["id"]]
+                if location:
+                    count_conditions.append(f"j.location ILIKE $2")
+                    count_params.append(f"%{location}%")
+                count_where = " AND ".join(count_conditions)
                 total = await db.fetch_val(
-                    """SELECT COUNT(*) FROM job_matches jm
+                    f"""SELECT COUNT(*) FROM job_matches jm
                        JOIN jobs j ON jm.job_id = j.id
-                       WHERE jm.user_id = $1 AND j.is_active = TRUE""",
-                    current_user["id"]
+                       WHERE {count_where}""",
+                    *count_params
                 )
                 source = "cv_matches"
             else:
@@ -494,46 +527,52 @@ async def get_recommended_jobs(
                                     if hide_saved and applied_job_ids:
                                         job_ids = [j_id for j_id in job_ids if j_id not in applied_job_ids]
                                     
-                                    if job_ids:
-                                        # Limit to requested amount
-                                        job_ids = job_ids[:limit + offset]
-                                        
-                                        conditions = ["j.id = ANY($2::uuid[])", "j.is_active = TRUE"]
-                                        params = [current_user["id"], job_ids]
-                                        param_count = 3
-                                        
-                                        if hide_saved:
-                                            # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
-                                            # Use NOT EXISTS to explicitly exclude jobs with any application record
-                                            conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
-                                        
-                                        where_clause = " AND ".join(conditions)
-                                        
-                                        # Preserve order from vector search
-                                        search_query_sql = f"""
-                                            WITH ordered_ids AS (
-                                                SELECT job_id, ord
-                                                FROM unnest($2::uuid[]) WITH ORDINALITY AS t(job_id, ord)
-                                            )
-                                            SELECT j.*, 
-                                                   CASE WHEN a.id IS NOT NULL THEN true ELSE false END as applied,
-                                                   a.status as application_status,
-                                                   a.id as application_id
-                                            FROM jobs j
-                                            LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
-                                            INNER JOIN ordered_ids o ON j.id = o.job_id
-                                            WHERE {where_clause}
-                                            ORDER BY o.ord
-                                            LIMIT ${param_count} OFFSET ${param_count + 1}
-                                        """
-                                        params.extend([limit, offset])
-                                        
-                                        recommended_jobs = await db.fetch_all(search_query_sql, *params)
-                                        recommended_jobs = [dict(job) for job in recommended_jobs]
-                                        
-                                        # Count total (approximate, based on vector results)
-                                        total = len(job_ids)
-                                        source = "cv_vector_search"
+                                if job_ids:
+                                    # Limit to requested amount
+                                    job_ids = job_ids[:limit + offset]
+                                    
+                                    conditions = ["j.id = ANY($2::uuid[])", "j.is_active = TRUE"]
+                                    params = [current_user["id"], job_ids]
+                                    param_count = 3
+                                    
+                                    if hide_saved:
+                                        # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
+                                        # Use NOT EXISTS to explicitly exclude jobs with any application record
+                                        conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
+                                    
+                                    # Apply location filter if provided
+                                    if location:
+                                        conditions.append(f"j.location ILIKE ${param_count}")
+                                        params.append(f"%{location}%")
+                                        param_count += 1
+                                    
+                                    where_clause = " AND ".join(conditions)
+                                    
+                                    # Preserve order from vector search
+                                    search_query_sql = f"""
+                                        WITH ordered_ids AS (
+                                            SELECT job_id, ord
+                                            FROM unnest($2::uuid[]) WITH ORDINALITY AS t(job_id, ord)
+                                        )
+                                        SELECT j.*, 
+                                               CASE WHEN a.id IS NOT NULL THEN true ELSE false END as applied,
+                                               a.status as application_status,
+                                               a.id as application_id
+                                        FROM jobs j
+                                        LEFT JOIN applications a ON j.id = a.job_id AND a.user_id = $1
+                                        INNER JOIN ordered_ids o ON j.id = o.job_id
+                                        WHERE {where_clause}
+                                        ORDER BY o.ord
+                                        LIMIT ${param_count} OFFSET ${param_count + 1}
+                                    """
+                                    params.extend([limit, offset])
+                                    
+                                    recommended_jobs = await db.fetch_all(search_query_sql, *params)
+                                    recommended_jobs = [dict(job) for job in recommended_jobs]
+                                    
+                                    # Count total (approximate, based on vector results)
+                                    total = len(job_ids)
+                                    source = "cv_vector_search"
                         except Exception as vector_err:
                             logger.warning(
                                 f"Vector search with CV profile failed: {vector_err}. "
@@ -633,6 +672,12 @@ async def get_recommended_jobs(
                                         # Use NOT EXISTS to explicitly exclude jobs with any application record
                                         conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
                                     
+                                    # Apply location filter if provided
+                                    if location:
+                                        conditions.append(f"j.location ILIKE ${param_count}")
+                                        params.append(f"%{location}%")
+                                        param_count += 1
+                                    
                                     where_clause = " AND ".join(conditions)
                                     
                                     # Preserve order from vector search
@@ -685,6 +730,12 @@ async def get_recommended_jobs(
                 # Hide jobs that have any application status (saved, applied, interviewing, offer, etc.)
                 # Use NOT EXISTS to explicitly exclude jobs with any application record
                 conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
+            
+            # Apply location filter if provided
+            if location:
+                conditions.append(f"j.location ILIKE ${param_count}")
+                params.append(f"%{location}%")
+                param_count += 1
             
             where_clause = " AND ".join(conditions)
             
@@ -1146,11 +1197,14 @@ async def search_jobs_vector_with_db(
                 raise ValueError(f"Embedding service unavailable: {str(embed_err)}")
             
             # Build filter conditions for Qdrant
+            # Note: Don't filter by location in Qdrant - use exact match which won't work
+            # for variations like "Singapore, Singapore" vs "Singapore"
+            # Instead, filter by location in SQL using ILIKE for partial matching
             filter_conditions = search.filter_conditions or {}
             if search.company_filter:
                 filter_conditions['company'] = search.company_filter
-            if location:
-                filter_conditions['location'] = location
+            # Location filtering is done in SQL with ILIKE for better partial matching
+            # Don't add location to Qdrant filter_conditions
             
             # Request more results to account for database filtering and pagination
             search_limit = min((limit + offset) * 2, 200)  # Get more results for filtering
@@ -1245,8 +1299,9 @@ async def search_jobs_vector_with_db(
                 # Use NOT EXISTS to explicitly exclude jobs with any application record
                 conditions.append("NOT EXISTS (SELECT 1 FROM applications a2 WHERE a2.job_id = j.id AND a2.user_id = $1)")
             
-            # Location filtering: if not already filtered in Qdrant, filter in SQL
-            if location and 'location' not in filter_conditions:
+            # Location filtering: always filter in SQL using ILIKE for partial matching
+            # This handles variations like "Singapore", "Singapore, Singapore", "Singapore, SG"
+            if location:
                 conditions.append(f"j.location ILIKE ${param_count}")
                 params.append(f"%{location}%")
                 param_count += 1
@@ -1433,3 +1488,270 @@ async def search_jobs_vector_with_db(
             }
         except Exception as fallback_err:
             raise HTTPException(status_code=500, detail=f"Error searching jobs: {str(fallback_err)}")
+
+
+@router.post("/scrape", response_model=Dict[str, Any])
+async def scrape_jobs(
+    background_tasks: BackgroundTasks,
+    search_term: str = Query(..., description="Job search term (e.g., 'Software Engineer')"),
+    location: str = Query("Hong Kong", description="Job location"),
+    results_wanted: int = Query(100, ge=1, le=1000, description="Number of results to fetch"),
+    hours_old: int = Query(720, ge=1, description="Maximum age of jobs in hours"),
+    sites: Optional[str] = Query(None, description="Comma-separated list of sites (indeed,linkedin,google)"),
+    country_indeed: Optional[str] = Query(None, description="Country for Indeed search"),
+    run_in_background: bool = Query(True, description="Run scraping in background subprocess (returns immediately)"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Scrape new jobs from the internet and save them to the database.
+    
+    This endpoint scrapes jobs from multiple sources (Indeed, LinkedIn, Google Jobs)
+    and saves them to PostgreSQL and Qdrant for later searching.
+    
+    Uses a subprocess to run scraping in a separate process to avoid blocking the API.
+    
+    Args:
+        search_term: Job search term (e.g., "Software Engineer", "Data Scientist")
+        location: Job location (default: "Hong Kong")
+        results_wanted: Number of results to fetch (default: 100, max: 1000)
+        hours_old: Maximum age of jobs in hours (default: 720 = 30 days)
+        sites: Comma-separated list of sites to scrape (default: indeed,linkedin,google)
+        country_indeed: Country for Indeed search (default: same as location)
+        run_in_background: If True, returns immediately and runs scraping in background subprocess
+        
+    Returns:
+        Dictionary with scraping results:
+        {
+            "status": "success" or "started",
+            "scraped": int,
+            "saved": int,
+            "failed": int,
+            "skipped": int,
+            "qdrant_saved": int,
+            "message": str
+        }
+    """
+    import subprocess
+    import asyncio
+    import json
+    import os
+    import sys
+    
+    try:
+        # Get the path to the scraping script
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        script_path = os.path.join(backend_dir, "scripts", "jobs-scraper", "scrape_jobs_api.py")
+        
+        if not os.path.exists(script_path):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Scraping script not found: {script_path}"
+            )
+        
+        # Build command arguments
+        cmd = [
+            sys.executable,
+            script_path,
+            "--search-term", search_term,
+            "--location", location,
+            "--results-wanted", str(results_wanted),
+            "--hours-old", str(hours_old),
+        ]
+        
+        if sites:
+            cmd.extend(["--sites", sites])
+        if country_indeed:
+            cmd.extend(["--country-indeed", country_indeed])
+        
+        # Define function to run scraping in subprocess (Windows-compatible)
+        async def run_scraping_subprocess():
+            """
+            Run scraping in a subprocess and return results (Windows-compatible).
+            
+            This function runs the subprocess in a thread pool using asyncio.to_thread(),
+            which ensures the blocking subprocess.run() call doesn't block the event loop.
+            This allows other API requests to be processed concurrently while scraping runs.
+            """
+            try:
+                logger.info(f"Starting scraping subprocess: {' '.join(cmd)}")
+                
+                # Use subprocess.run() in a thread pool for Windows compatibility
+                # This avoids the NotImplementedError on Windows with asyncio.create_subprocess_exec
+                # The thread pool execution ensures the blocking subprocess doesn't block the event loop
+                def run_subprocess():
+                    """Run subprocess synchronously in a thread (non-blocking for event loop)"""
+                    try:
+                        # Set UTF-8 encoding environment variables for Windows compatibility
+                        env = os.environ.copy()
+                        env['PYTHONIOENCODING'] = 'utf-8'
+                        env['PYTHONUTF8'] = '1'  # Python 3.7+ UTF-8 mode
+                        
+                        process = subprocess.run(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=backend_dir,
+                            env=env,
+                            timeout=3600.0,  # 1 hour timeout
+                            text=False  # Get bytes for proper encoding handling
+                        )
+                        return process.returncode, process.stdout or b"", process.stderr or b""
+                    except subprocess.TimeoutExpired:
+                        logger.error("Scraping subprocess timed out after 1 hour")
+                        return 1, b"{}", b"Scraping timed out after 1 hour"
+                    except Exception as e:
+                        logger.error(f"Subprocess execution error: {str(e)}")
+                        return 1, b"{}", str(e).encode('utf-8')
+                
+                # Run subprocess in thread pool (Windows-compatible)
+                try:
+                    returncode, stdout_bytes, stderr_bytes = await asyncio.to_thread(run_subprocess)
+                except AttributeError:
+                    # Fallback for Python < 3.9: use run_in_executor
+                    loop = asyncio.get_event_loop()
+                    returncode, stdout_bytes, stderr_bytes = await loop.run_in_executor(
+                        None, run_subprocess
+                    )
+                
+                # Parse JSON output from stdout
+                # Use errors='replace' to handle non-UTF-8 characters gracefully
+                # This is especially important on Windows where subprocess output might use different encodings
+                try:
+                    stdout_text = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else '{}'
+                except (UnicodeDecodeError, AttributeError) as decode_err:
+                    logger.warning(f"Failed to decode stdout as UTF-8: {decode_err}, trying with errors='ignore'")
+                    try:
+                        stdout_text = stdout_bytes.decode('utf-8', errors='ignore') if stdout_bytes else '{}'
+                    except Exception:
+                        # Last resort: decode as latin-1 (which can decode any byte)
+                        stdout_text = stdout_bytes.decode('latin-1', errors='replace') if stdout_bytes else '{}'
+                
+                try:
+                    stderr_text = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ''
+                except (UnicodeDecodeError, AttributeError) as decode_err:
+                    logger.warning(f"Failed to decode stderr as UTF-8: {decode_err}, trying with errors='ignore'")
+                    try:
+                        stderr_text = stderr_bytes.decode('utf-8', errors='ignore') if stderr_bytes else ''
+                    except Exception:
+                        # Last resort: decode as latin-1 (which can decode any byte)
+                        stderr_text = stderr_bytes.decode('latin-1', errors='replace') if stderr_bytes else ''
+                
+                # Log stderr (contains logging output)
+                if stderr_text:
+                    logger.info(f"Scraping subprocess stderr: {stderr_text[:500]}")  # Log first 500 chars
+                
+                # Check return code
+                if returncode != 0:
+                    logger.warning(f"Scraping subprocess exited with code {returncode}")
+                    # Try to parse error from stdout if available
+                    try:
+                        error_result = json.loads(stdout_text.strip())
+                        if error_result.get("status") == "error":
+                            return error_result
+                    except:
+                        pass
+                    return {
+                        "status": "error",
+                        "error": f"Scraping process failed with exit code {returncode}. {stderr_text[:200]}",
+                        "scraped": 0,
+                        "saved": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "qdrant_saved": 0,
+                        "qdrant_failed": 0
+                    }
+                
+                try:
+                    result = json.loads(stdout_text.strip())
+                    logger.info(f"Scraping subprocess completed: {result.get('saved', 0)} jobs saved")
+                    return result
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse scraping result JSON: {e}")
+                    logger.error(f"stdout: {stdout_text[:500]}")
+                    return {
+                        "status": "error",
+                        "error": f"Failed to parse scraping result: {str(e)}",
+                        "scraped": 0,
+                        "saved": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "qdrant_saved": 0,
+                        "qdrant_failed": 0
+                    }
+                    
+            except Exception as e:
+                logger.error(f"Error running scraping subprocess: {str(e)}", exc_info=True)
+                return {
+                    "status": "error",
+                    "error": str(e),
+                    "scraped": 0,
+                    "saved": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "qdrant_saved": 0,
+                    "qdrant_failed": 0
+                }
+        
+        # Run in background or wait for results
+        if run_in_background:
+            # Wrap the subprocess function to handle errors gracefully
+            # This ensures errors in background tasks don't affect the API response
+            async def run_scraping_safely():
+                """Run scraping with error handling to prevent background task errors from affecting API"""
+                try:
+                    result = await run_scraping_subprocess()
+                    logger.info(f"Background scraping completed: {result.get('saved', 0)} jobs saved")
+                except Exception as e:
+                    # Log error but don't raise - background tasks should be fire-and-forget
+                    logger.error(f"Error in background scraping task: {str(e)}", exc_info=True)
+            
+            # Use BackgroundTasks for proper fire-and-forget execution
+            # BackgroundTasks ensures the task runs after the response is sent
+            background_tasks.add_task(run_scraping_safely)
+            
+            logger.info(f"Job scraping task queued for background execution: '{search_term}' in '{location}'")
+            return {
+                "status": "started",
+                "message": f"Job scraping started in background subprocess for '{search_term}' in '{location}'. The scraping will run asynchronously and won't block other API requests.",
+                "scraped": 0,
+                "saved": 0,
+                "failed": 0,
+                "skipped": 0,
+                "qdrant_saved": 0
+            }
+        else:
+            # Run subprocess and wait for results
+            logger.info(f"Starting job scraping subprocess: {search_term} in {location}")
+            result = await run_scraping_subprocess()
+            
+            # Format response
+            if result.get("status") == "error":
+                return {
+                    "status": "error",
+                    "message": f"Scraping failed: {result.get('error', 'Unknown error')}",
+                    "scraped": result.get("scraped", 0),
+                    "saved": result.get("saved", 0),
+                    "failed": result.get("failed", 0),
+                    "skipped": result.get("skipped", 0),
+                    "qdrant_saved": result.get("qdrant_saved", 0),
+                    "qdrant_failed": result.get("qdrant_failed", 0)
+                }
+            else:
+                return {
+                    "status": "success",
+                    "message": f"Successfully scraped {result.get('scraped', 0)} jobs",
+                    "scraped": result.get("scraped", 0),
+                    "saved": result.get("saved", 0),
+                    "failed": result.get("failed", 0),
+                    "skipped": result.get("skipped", 0),
+                    "qdrant_saved": result.get("qdrant_saved", 0),
+                    "qdrant_failed": result.get("qdrant_failed", 0),
+                    "csv_file": result.get("csv_file")
+                }
+            
+    except Exception as e:
+        logger.error(f"Error scraping jobs: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error scraping jobs: {str(e)}"
+        )

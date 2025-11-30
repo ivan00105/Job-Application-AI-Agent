@@ -195,6 +195,19 @@ export const jobsAPI = {
     const response = await api.get(`/jobs/${jobId}/similar`, { params });
     return response.data;
   },
+
+  scrape: async (params: {
+    search_term: string;
+    location?: string;
+    results_wanted?: number;
+    hours_old?: number;
+    sites?: string;
+    country_indeed?: string;
+    run_in_background?: boolean;
+  }) => {
+    const response = await api.post('/jobs/scrape', null, { params });
+    return response.data;
+  },
 };
 
 // Matches API
@@ -252,6 +265,109 @@ export const applicationsAPI = {
   prepareCV: async (jobId: string) => {
     const response = await api.post(`/applications/${jobId}/prepare/cv`);
     return response.data;
+  },
+
+  prepareCVStream: async (
+    jobId: string,
+    onStepUpdate: (update: any) => void,
+    onComplete: (result: any) => void,
+    onError: (error: string) => void
+  ) => {
+    const token = localStorage.getItem('access_token');
+    const abortController = new AbortController();
+    
+    console.log('Starting CV generation stream for jobId:', jobId);
+    console.log('API URL:', `${API_BASE_URL}/api/applications/${jobId}/prepare/cv/stream`);
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/applications/${jobId}/prepare/cv/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        signal: abortController.signal
+      });
+
+      console.log('Stream response status:', response.status, response.statusText);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Stream response error:', errorText);
+        throw new Error(errorText || `Failed to start CV generation stream: ${response.status} ${response.statusText}`);
+      }
+
+      if (!response.body) {
+        throw new Error('Streaming not supported in this browser');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let eventCount = 0;
+
+      console.log('Starting to read stream...');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          console.log('Stream reading completed. Total events:', eventCount);
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim() === '') {
+            continue; // Skip empty lines
+          }
+          
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            eventCount++;
+            
+            if (data === '[DONE]') {
+              console.log('Received [DONE] signal');
+              return;
+            }
+
+            try {
+              const update = JSON.parse(data);
+              console.log(`Received event #${eventCount}:`, update.type, update);
+              
+              if (update.type === 'step_start' || update.type === 'step_complete') {
+                onStepUpdate(update);
+              } else if (update.type === 'complete') {
+                onComplete(update);
+              } else if (update.type === 'error') {
+                onError(update.error || 'CV generation failed');
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', data, e);
+            }
+          } else if (line.startsWith(': ')) {
+            // Keep-alive comment, ignore
+            console.log('Received keep-alive');
+            continue;
+          } else {
+            // Log unexpected lines for debugging
+            console.log('Unexpected SSE line:', line);
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error('Stream error:', error);
+      if (error.name === 'AbortError') {
+        onError('Request was cancelled');
+      } else {
+        onError(error.message || 'Failed to stream CV generation');
+      }
+    }
   },
 
   refineCV: async (cvId: string) => {

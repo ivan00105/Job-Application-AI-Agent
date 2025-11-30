@@ -13,7 +13,7 @@ async def run_migration():
     """Run the database migration"""
     print("Running database migration...\n")
     
-    migration_file = Path(__file__).parent.parent / "migrations" / "create_initial_schema.sql"
+    migration_file = Path(__file__).parent.parent.parent / "migrations" / "create_initial_schema.sql"
     
     if not migration_file.exists():
         print(f"Migration file not found: {migration_file}")
@@ -89,7 +89,7 @@ async def main():
         print("=" * 60)
         print("\nNext steps:")
         print("  1. Setup Qdrant collections: python scripts/setup_qdrant_collections.py")
-        print("  2. Create test users: python scripts/create_test_users.py")
+        print("  2. Create test users: python scripts/admin-tools/create_test_users.py")
         print("  3. Start the backend: python main.py")
     else:
         print("\n" + "=" * 60)

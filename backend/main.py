@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from api import auth, cv, jobs, matches, applications, interview, autofill
+from api import auth, cv, jobs, matches, applications, interview, autofill, games
 from config import get_settings, get_base_url
 from database.postgres_client import get_postgres_client
 
@@ -91,6 +91,7 @@ app.include_router(matches.router, prefix="/api/matches", tags=["Job Matching"])
 app.include_router(applications.router, prefix="/api/applications", tags=["Applications"])
 app.include_router(interview.router, prefix="/api/interview", tags=["Interview"])
 app.include_router(autofill.router, prefix="/api/autofill", tags=["Autofill"])
+app.include_router(games.router, prefix="/api/games", tags=["Games"])
 
 
 @app.get("/")

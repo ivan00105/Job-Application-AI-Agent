@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { ProfileRadarChart } from '../components/RadarChart';
 import { DashboardLoader } from '../components/DashboardLoader';
+import { AgenticLoadingOverlay } from '../components/AgenticLoadingOverlay';
 import { matchesAPI, jobsAPI, cvAPI } from '../api/client';
 import { 
   Target, 
@@ -58,6 +59,11 @@ export const DashboardPage = () => {
   const [error, setError] = useState('');
   const [hasProfile, setHasProfile] = useState(false);
   const [profileScoring, setProfileScoring] = useState<ProfileScoring | null>(null);
+  
+  // Profile re-analysis tracking
+  const [analyzingProfile, setAnalyzingProfile] = useState(false);
+  const [analysisSteps, setAnalysisSteps] = useState<any[]>([]);
+  const [currentAnalysisStep, setCurrentAnalysisStep] = useState<string | undefined>();
 
   useEffect(() => {
     loadDashboardData();
@@ -71,11 +77,11 @@ export const DashboardPage = () => {
         await cvAPI.getProfile();
         setHasProfile(true);
         
-        // Load profile scoring
-        loadProfileScoring();
-        
-        // Load recommended jobs
-        loadRecommendedJobs();
+        // Load profile scoring and recommended jobs in parallel
+        await Promise.all([
+          loadProfileScoring(),
+          loadRecommendedJobs()
+        ]);
       } catch (err: any) {
         if (err.response?.status === 404) {
           setHasProfile(false);
@@ -112,8 +118,55 @@ export const DashboardPage = () => {
     }
   };
 
-  const handleReanalyze = () => {
-    loadProfileScoring(true);
+  const handleReanalyze = async () => {
+    setAnalyzingProfile(true);
+    setAnalysisSteps([]);
+    setCurrentAnalysisStep('analyze_cv');
+    
+    try {
+      // Start the API call
+      const scoringPromise = cvAPI.getProfileScoring(true);
+      
+      // Simulate analysis steps with delays while API call is in progress
+      setTimeout(() => {
+        setAnalysisSteps([{ step: 'analyze_cv', success: true, analysis: { relevant_experiences: [], relevant_skills: [] } }]);
+        setCurrentAnalysisStep('create_strategy');
+      }, 800);
+      
+      setTimeout(() => {
+        setAnalysisSteps(prev => [...prev, { step: 'create_strategy', success: true, strategy: { customization_approach: 'comprehensive', content_priorities: ['qualifications', 'experience', 'skills'] } }]);
+        setCurrentAnalysisStep('generate_content');
+      }, 1600);
+      
+      // Wait for the API call to complete
+      const scoring = await scoringPromise;
+      
+      setTimeout(() => {
+        setAnalysisSteps(prev => [...prev, { step: 'generate_content', success: true }]);
+        setCurrentAnalysisStep('validate_output');
+      }, 2400);
+      
+      setTimeout(() => {
+        setAnalysisSteps(prev => [...prev, { step: 'validate_output', success: true, validation: { quality_score: 9, issues: [] } }]);
+        setCurrentAnalysisStep(undefined);
+        setProfileScoring(scoring);
+        
+        // Hide overlay after a brief moment to show completion
+        setTimeout(() => {
+          setAnalyzingProfile(false);
+          setAnalysisSteps([]);
+          setCurrentAnalysisStep(undefined);
+        }, 1500);
+      }, 3200);
+    } catch (err: any) {
+      console.error('Failed to re-analyze profile:', err);
+      setAnalysisSteps(prev => [...prev, { step: 'validate_output', success: false, error: err.message || 'Failed to analyze profile' }]);
+      setTimeout(() => {
+        setAnalyzingProfile(false);
+        setAnalysisSteps([]);
+        setCurrentAnalysisStep(undefined);
+      }, 2000);
+    }
   };
 
   const loadRecommendedJobs = async () => {
@@ -186,32 +239,15 @@ export const DashboardPage = () => {
   }
 
   return (
-    <Layout>
-      {/* LLM Loading Overlay */}
-      {scoringLoading && (
-        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white rounded-lg p-8 max-w-md mx-4 shadow-xl">
-            <div className="text-center">
-              <Loader2 className="h-12 w-12 text-blue-600 animate-spin mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                AI Analysis in Progress
-              </h3>
-              <p className="text-gray-600 mb-4">
-                Our AI is analyzing your profile to generate personalized insights...
-              </p>
-              <div className="space-y-2 text-sm text-gray-500">
-                <p>• Evaluating your qualifications</p>
-                <p>• Assessing your experience</p>
-                <p>• Analyzing your skills</p>
-                <p>• Comparing with market standards</p>
-              </div>
-              <p className="text-xs text-gray-400 mt-4">
-                This may take 30-60 seconds
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+    <>
+      <AgenticLoadingOverlay
+        isVisible={analyzingProfile}
+        operation="generating"
+        agentSteps={analysisSteps}
+        currentStep={currentAnalysisStep}
+        message="Re-analyzing your profile with AI to generate updated insights and recommendations..."
+      />
+      <Layout>
 
       <div className="space-y-8">
         {/* Header */}
@@ -1054,5 +1090,6 @@ export const DashboardPage = () => {
         </div>
       </div>
     </Layout>
+    </>
   );
 };

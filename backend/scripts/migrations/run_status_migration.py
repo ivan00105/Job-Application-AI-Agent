@@ -14,7 +14,7 @@ async def run_status_migration():
     """Run the application status migration"""
     print("Running application status migration...\n")
     
-    migration_file = Path(__file__).parent.parent / "migrations" / "add_application_statuses.sql"
+    migration_file = Path(__file__).parent.parent.parent / "migrations" / "add_application_statuses.sql"
     
     if not migration_file.exists():
         print(f"Migration file not found: {migration_file}")
